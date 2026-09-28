@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests;
 
 use Carbon\CarbonImmutable;
+use InvalidArgumentException;
 use PandaBear\Mlm\Exceptions\InvalidVolumeEntry;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
+use PHPUnit\Framework\Attributes\DataProvider;
 
 final class VolumeTotalsTest extends DatabaseTestCase
 {
@@ -88,6 +90,30 @@ final class VolumeTotalsTest extends DatabaseTestCase
         $this->assertSame('50', $this->totals()->forMember($member, 'sales', ...$june)->value());
         $this->assertSame('-50', $this->totals()->forMember($member, 'sales', ...$july)->value());
         $this->assertSame('0', $this->totals()->forMember($member, 'sales')->value());
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function emptyRanges(): array
+    {
+        return [
+            'from equals until' => ['2026-06-01 00:00:00', '2026-06-01 00:00:00'],
+            'from after until' => ['2026-07-01 00:00:00', '2026-06-01 00:00:00'],
+            'equal to the second' => ['2026-06-01 00:00:00.200', '2026-06-01 00:00:00.900'],
+        ];
+    }
+
+    #[DataProvider('emptyRanges')]
+    public function test_an_empty_or_inverted_range_is_refused(string $from, string $until): void
+    {
+        $member = Member::factory()->create();
+        $this->record($member, '10', 'a');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must start before it ends');
+
+        $this->totals()->forMember($member, 'sales', CarbonImmutable::parse($from), CarbonImmutable::parse($until));
     }
 
     public function test_an_invalid_type_is_refused(): void

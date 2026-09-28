@@ -100,6 +100,42 @@ final class VolumeRecordingTest extends DatabaseTestCase
         ];
     }
 
+    public function test_the_largest_single_entry_is_recorded_exactly(): void
+    {
+        $entry = $this->record(Member::factory()->create(), '999999999999.999999', 'k');
+
+        $this->assertSame('999999999999.999999', $entry->quantity->value());
+        $this->assertSame(999_999_999_999_999_999, DB::table('mlm_volume_entries')->value('quantity_millionths'));
+    }
+
+    public function test_the_exact_millionths_string_is_stored_as_an_integer(): void
+    {
+        $this->record(Member::factory()->create(), '25.5', 'k');
+
+        // Inserted as the string "25500000" — never through a PHP int or float.
+        $this->assertSame('integer', DB::selectOne('select typeof(quantity_millionths) as type from mlm_volume_entries')->type);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function oversizedQuantities(): array
+    {
+        return [
+            'thirteen integer digits' => ['1000000000000'],
+            'a total beyond a 64-bit integer' => ['123456789012345678.901234'],
+        ];
+    }
+
+    #[DataProvider('oversizedQuantities')]
+    public function test_a_quantity_too_large_for_one_entry_is_refused(string $quantity): void
+    {
+        $this->expectException(InvalidVolumeEntry::class);
+        $this->expectExceptionMessage('at most 12 integer digits');
+
+        new RecordVolume(Member::factory()->make(), 'sales', Quantity::of($quantity), 'order', 'ORD-1', 'k', now());
+    }
+
     #[DataProvider('refusedQuantities')]
     public function test_a_recorded_quantity_must_be_positive(string $quantity): void
     {

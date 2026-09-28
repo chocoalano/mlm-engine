@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Exceptions;
 
 use DomainException;
+use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Volume\Quantity;
 
 final class InvalidVolumeEntry extends DomainException
@@ -19,6 +20,15 @@ final class InvalidVolumeEntry extends DomainException
     public static function notPositive(Quantity $quantity): self
     {
         return new self("A recorded volume quantity must be positive; {$quantity} given. A correction is a reversal, not a negative entry.");
+    }
+
+    public static function tooLargeForEntry(Quantity $quantity): self
+    {
+        return new self(sprintf(
+            'A volume entry stores at most %d integer digits; %s is too large for one entry.',
+            VolumeEntry::MAX_INTEGER_DIGITS,
+            $quantity,
+        ));
     }
 
     public static function identifier(string $field, string $value): self

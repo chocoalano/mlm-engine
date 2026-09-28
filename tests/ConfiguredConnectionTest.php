@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests;
 
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Metrics\MetricContext;
+use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
@@ -18,8 +20,8 @@ use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 
 /**
  * `mlm.database.connection` names a connection other than the default, and
- * the migrations, the models, the plan lifecycle, both genealogies and the
- * volume history all follow it.
+ * the migrations, the models, the plan lifecycle, both genealogies, the
+ * volume history and the metrics read from it all follow it.
  */
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
@@ -119,6 +121,20 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertCount(3, $this->volumeRows('mlm'));
         $this->assertSame('5', $this->totals()->forMember($alice, 'sales')->value());
         $this->assertTrue($this->record($alice, '20', 'order:ORD-1')->is($entry));
+    }
+
+    public function test_metrics_resolve_from_the_configured_connection(): void
+    {
+        ['Alice' => $alice] = $this->members(Program::factory()->create(), 'Alice');
+        $this->record($alice, '20', 'order:ORD-1');
+        $this->reverse($this->record($alice, '5', 'order:ORD-2'), 'refund:RF-1');
+
+        // The volume table exists only on [mlm]: a query on the default
+        // connection would fail, not return zero.
+        $value = $this->app->make(MetricEngine::class)->resolve('member.volume', new MetricContext($alice, ['type' => 'sales']));
+
+        $this->assertSame('20', $value->value());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_volume_entries'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

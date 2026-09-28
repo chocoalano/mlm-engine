@@ -45,6 +45,8 @@ final readonly class RecordVolume
             throw InvalidVolumeEntry::notPositive($quantity);
         }
 
+        VolumeInput::storable($quantity);
+
         $this->type = VolumeInput::identifier('type', $type);
         $this->sourceType = VolumeInput::identifier('source type', $sourceType);
         $this->sourceId = VolumeInput::text('source id', $sourceId, 128);

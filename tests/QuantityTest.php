@@ -24,7 +24,9 @@ final class QuantityTest extends TestCase
             'leading zeros' => ['0007.50', '7.5'],
             'negative' => ['-0.125', '-0.125'],
             'negative zero' => ['-0.000', '0'],
-            'largest' => ['999999999999.999999', '999999999999.999999'],
+            'the largest single entry' => ['999999999999.999999', '999999999999.999999'],
+            'larger than any entry' => ['1000000000000', '1000000000000'],
+            'far beyond a 64-bit integer' => ['123456789012345678901234.5', '123456789012345678901234.5'],
         ];
     }
 
@@ -54,7 +56,6 @@ final class QuantityTest extends TestCase
             'a decimal comma' => ['1,5', 'plain decimal'],
             'not a number' => ['abc', 'plain decimal'],
             'seven decimal places' => ['1.1234567', 'not rounded'],
-            'thirteen integer digits' => ['1000000000000', 'integer digits'],
         ];
     }
 
@@ -67,14 +68,47 @@ final class QuantityTest extends TestCase
         Quantity::of($input);
     }
 
-    public function test_it_converts_to_and_from_millionths_exactly(): void
+    public function test_it_converts_to_millionths_as_an_exact_integer_string(): void
     {
-        $this->assertSame(25_500_000, Quantity::of('25.5')->toMillionths());
-        $this->assertSame(-125_000, Quantity::of('-0.125')->toMillionths());
-        $this->assertSame(999_999_999_999_999_999, Quantity::of('999999999999.999999')->toMillionths());
+        $this->assertSame('25500000', Quantity::of('25.5')->toMillionths());
+        $this->assertSame('-125000', Quantity::of('-0.125')->toMillionths());
+        $this->assertSame('1', Quantity::of('0.000001')->toMillionths());
+        $this->assertSame('0', Quantity::of('0')->toMillionths());
+        $this->assertSame('999999999999999999', Quantity::of('999999999999.999999')->toMillionths());
+        $this->assertSame('123456789012345678901234500000', Quantity::of('123456789012345678901234.5')->toMillionths());
+    }
+
+    public function test_it_reads_millionths_exactly(): void
+    {
         $this->assertSame('25.5', Quantity::fromMillionths(25_500_000)->value());
+        $this->assertSame('25.5', Quantity::fromMillionths('25500000')->value());
         $this->assertSame('-0.000001', Quantity::fromMillionths(-1)->value());
         $this->assertSame('0', Quantity::fromMillionths(0)->value());
+        $this->assertSame('0', Quantity::fromMillionths('-0')->value());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function millionths(): array
+    {
+        return [
+            'zero' => ['0'],
+            'one millionth' => ['1'],
+            'a normal entry' => ['25500000'],
+            'the largest single entry' => ['999999999999999999'],
+            'beyond a 64-bit integer' => ['123456789012345678901234'],
+            'negative beyond a 64-bit integer' => ['-123456789012345678901234'],
+        ];
+    }
+
+    #[DataProvider('millionths')]
+    public function test_millionths_round_trip_exactly_at_any_size(string $millionths): void
+    {
+        $quantity = Quantity::fromMillionths($millionths);
+
+        $this->assertSame($millionths, $quantity->toMillionths());
+        $this->assertTrue(Quantity::of($quantity->value())->equals($quantity));
     }
 
     public function test_a_sum_larger_than_an_integer_still_reads_exactly(): void
