@@ -12,6 +12,7 @@
     "require": {
         "php": "^8.2",
         "chocoalano/panel": "^0.5.7",
+        "illuminate/database": "^12.0|^13.0",
         "illuminate/support": "^12.0|^13.0"
     },
     "require-dev": {
@@ -20,7 +21,8 @@
     },
     "autoload": {
         "psr-4": {
-            "PandaBear\\Mlm\\": "src/"
+            "PandaBear\\Mlm\\": "src/",
+            "PandaBear\\Mlm\\Database\\Factories\\": "database/factories/"
         }
     },
     "autoload-dev": {
