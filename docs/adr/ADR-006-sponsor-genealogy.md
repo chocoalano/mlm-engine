@@ -19,11 +19,11 @@ Every MLM program needs to know who introduced whom. Many plans also position me
 - **Not tied to plans.** Sponsorship belongs to program and member, not to a plan or plan version, and carries no monetary or calculation data.
 - **One writer.** `SponsorEdge` is read-only through Eloquent. Creating, updating or deleting an edge through the model is refused, because an edge without its genealogy paths would corrupt the tree.
 - **Decided from the database.** An assignment re-reads both members under lock inside its transaction. Stale instances cannot pass a check the stored state fails.
-- **Locking.** The two members are locked in primary-key order, then the program row. Key order means two assignments sharing a member cannot deadlock. The program lock is what makes concurrent cycle checks safe: two assignments over disjoint members could otherwise each pass a check that the other invalidates, as with `A→B` and `C→D` plus concurrent `B sponsors C` and `D sponsors A`. Sponsor assignments within one program therefore run one at a time.
+- **Locking.** The two members are locked in primary-key order with a shared lock, then the program row exclusively. The program lock is what makes concurrent cycle checks safe: two assignments over disjoint members could otherwise each pass a check that the other invalidates, as with `A→B` and `C→D` plus concurrent `B sponsors C` and `D sponsors A`. Sponsor assignments within one program therefore run one at a time. The member lock only holds both rows as read until the write commits, so it is shared: the foreign keys of a write's new paths read-lock every member those paths name, and an exclusive member lock held by an assignment waiting for the program would block the assignment holding it. That deadlock was reproduced on MySQL and PostgreSQL when the member lock was exclusive.
 
 ## Consequences
 
 - Sponsorship and placement can differ for the same member without either being distorted.
 - A mistaken sponsor cannot be fixed yet. That waits for an explicit correction operation with audit semantics.
 - A member that takes part in the sponsor tree — as sponsor or sponsored — cannot be deleted: its edges and paths restrict it.
-- Row locks are not exercised by the SQLite test suite, where `FOR UPDATE` is a no-op and SQLite serialises writers itself. The locking is correct by design for MySQL and PostgreSQL but unproven under real concurrency.
+- Row locks are not exercised by the default SQLite suite, where `FOR UPDATE` is a no-op and SQLite serialises writers itself. The opt-in real-database suite exercises them with concurrent sessions on MySQL and PostgreSQL: racing cycle checks, sponsor against placement writes, and writes naming the same members in opposite order.
