@@ -11,6 +11,7 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
 use InvalidArgumentException;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Support\EffectiveMoment;
 
 /**
  * @internal
@@ -89,6 +90,35 @@ final readonly class ClosureTree
             ->where('ancestor_id', $ancestorId)
             ->where('descendant_id', $descendantId)
             ->exists();
+    }
+
+    /**
+     * The moment of a write that joins `$childId`'s subtree under `$parentId`:
+     * `$now`, but never earlier than a moment already in either part it
+     * joins — the paths ending at the parent, its line and its self path,
+     * and the paths starting at the child, its subtree and its self path.
+     *
+     * Every path the join creates is dated by this one moment, and rebuilt
+     * from the edges a path is dated by the latest edge on its chain. The
+     * floor makes the two agree even when the application clock has gone
+     * back since an earlier edge was written. Only the two parts matter: an
+     * unrelated part of the program never delays a write. The same second is
+     * kept as it is; nothing is ever pushed forward past the floor.
+     */
+    public function joinMoment(Connection $connection, string $parentId, string $childId, CarbonImmutable $now): CarbonImmutable
+    {
+        $latest = max(
+            $this->paths($connection)->where('descendant_id', $parentId)->max('effective_from'),
+            $this->paths($connection)->where('ancestor_id', $childId)->max('effective_from'),
+        );
+
+        if ($latest === null) {
+            return $now;
+        }
+
+        $floor = EffectiveMoment::of(CarbonImmutable::parse((string) $latest));
+
+        return $floor->greaterThan($now) ? $floor : $now;
     }
 
     /**
