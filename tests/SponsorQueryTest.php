@@ -7,7 +7,7 @@ namespace PandaBear\Mlm\Tests;
 use InvalidArgumentException;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
-use PandaBear\Mlm\Tests\Concerns\BuildsSponsorTrees;
+use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 
 /**
  * Alice
@@ -19,7 +19,7 @@ use PandaBear\Mlm\Tests\Concerns\BuildsSponsorTrees;
  */
 final class SponsorQueryTest extends DatabaseTestCase
 {
-    use BuildsSponsorTrees;
+    use BuildsGenealogies;
 
     public function test_ancestors_are_nearest_first_and_exclude_the_member(): void
     {

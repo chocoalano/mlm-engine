@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning and the sponsor genealogy. Plan rules, placement and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, and the sponsor and placement genealogies. Plan rules, binary and matrix positioning, automatic placement and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -66,7 +66,8 @@ php artisan migrate
 | `mlm_plans` | plans: `id`, `program_id`, `code`, `name` |
 | `mlm_plan_versions` | plan versions: `id`, `plan_id`, `version`, `status`, and one timestamp per lifecycle step |
 | `mlm_sponsor_edges` | direct sponsorships: `id`, `member_id`, `sponsor_id`, `assigned_at` |
-| `mlm_genealogy_paths` | every ancestor/descendant pair: `tree_type`, `ancestor_id`, `descendant_id`, `depth` |
+| `mlm_genealogy_paths` | every ancestor/descendant pair of either tree: `tree_type`, `ancestor_id`, `descendant_id`, `depth` |
+| `mlm_placement_edges` | direct placements: `id`, `member_id`, `parent_id`, `placed_at` |
 
 Primary keys are ULIDs. The tables and the models use the connection named by `mlm.database.connection` — the application's default when it is not set.
 
@@ -162,7 +163,7 @@ Plan versions do not carry any rules yet: there is nothing to calculate with.
 
 ## Sponsor genealogy
 
-The sponsor genealogy records who sponsored whom within a program. It is not a placement structure: where a member sits in a binary or matrix network is a separate concept, and it is **not implemented yet**.
+The sponsor genealogy records who sponsored whom within a program. It is not placement — see [Placement genealogy](#placement-genealogy).
 
 ### Direct sponsor
 
@@ -199,6 +200,39 @@ A member cannot be sponsored by anyone in its own sponsor subtree: if Alice spon
 
 Ancestry is read from a closure table, never walked recursively. A member taking part in the sponsor tree cannot be deleted.
 
+## Placement genealogy
+
+| | Answers | Service |
+| --- | --- | --- |
+| Sponsor genealogy | who introduced whom | `SponsorGenealogy` |
+| Placement genealogy | where a member is structurally placed | `PlacementGenealogy` |
+
+The two are independent graphs over the same members. A member can be sponsored by Alice and placed under Bob; sponsoring never places, and placing never sponsors.
+
+```php
+use PandaBear\Mlm\Genealogy\PlacementGenealogy;
+
+$placement = app(PlacementGenealogy::class);
+
+$placement->place($charlie, $bob);          // Charlie is placed under Bob
+
+$placement->directParent($charlie);         // Bob, or null for a placement root
+$placement->directChildren($bob);           // members placed directly under Bob, in placement order
+$placement->ancestors($charlie);            // PlacementRelative: member + depth, nearest first
+$placement->descendants($bob, maxDepth: 1);
+```
+
+- A member has at most one placement parent, and a member without one is a placement root. A program may have many.
+- A parent may have any number of members placed under it. There is no capacity, position or slot in this generic layer.
+- Member and parent must be in the same program. A member cannot be placed under itself or under anyone in its own placement subtree. Cycle checks only see placement, so placement may even run opposite to sponsorship.
+- A placement is made once. There is no move or removal yet.
+- A member that already has members placed under it can still receive its first placement parent; its whole placement subtree is attached beneath that parent.
+- Refused placements throw `InvalidPlacementAssignment` and change nothing. Every placement runs in one transaction.
+
+Placement paths share the closure table with sponsor paths under their own `tree_type`, and never leak into sponsor queries. **Binary positioning (left/right), matrix slots, spillover and automatic placement strategies are not implemented yet.** A member taking part in the placement tree cannot be deleted.
+
+Both genealogies are written only through their services. Raw query-builder or SQL writes to the edge or path tables bypass every graph rule: the database backs local invariants — one direct edge per member, one path per pair, foreign keys — but not acyclicity or consistency between edges and paths.
+
 The design decisions are recorded in [`docs/adr`](docs/adr).
 
 ## Configuration
@@ -219,7 +253,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: sponsor reassignment and correction, placement genealogy, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 
