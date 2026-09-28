@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, checked but not yet evaluated; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rule evaluation, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -215,7 +215,35 @@ $next = app(PlanDefinitionCloner::class)->cloneToNewDraft($draft);   // the next
 - To change a validated, published or active definition, clone it into a new draft with `PlanDefinitionCloner`, edit the draft and validate it.
 - Read a definition through `$version->components`, `$component->rules` and `$rule->definition`. Components and rules are read-only through Eloquent.
 
-**Rules are not evaluated yet.** Nothing decides whether a member meets a rule: qualification, ranks and commission are not implemented.
+Rules are evaluated one at a time by the qualification engine below. Ranks and commission are not implemented.
+
+## Qualification
+
+The qualification engine evaluates **one stored rule, chosen by you**, for one member over an optional effective range `[from, until)`:
+
+```php
+use PandaBear\Mlm\Qualification\QualificationContext;
+use PandaBear\Mlm\Qualification\QualificationEngine;
+
+$decision = app(QualificationEngine::class)->evaluate(
+    $rule,                                   // a PlanRule of a validated version
+    new QualificationContext(
+        member: $member,
+        from: $start,                        // optional, included
+        until: $until,                       // optional, excluded
+    ),
+);
+
+$decision->qualified;                        // true or false
+$decision->toArray();                        // identities, range and the full trace
+```
+
+- You select the rule. The engine never picks a plan, the active version, or a rule, and gives no meaning to several rules in one component.
+- A draft's rule cannot be evaluated. A rule of any validated version — validated, published, active, superseded or archived — can, so past decisions can be reproduced.
+- The member must belong to the rule's program. Rule, version and member are read from the database, not from the instances you pass.
+- Every condition's metric is resolved through the metric engine with the same range, and compared exactly. `between` includes both bounds. Every condition is evaluated and appears in the trace, with its value, even when the result was already decided.
+- `qualified` is false only when the rule was evaluated and does not hold. A draft, another program's member, a missing metric or a failing one throws `QualificationEvaluationException` instead.
+- Results are not stored, and nothing is written. Ranks and commission are not implemented.
 
 ## Sponsor genealogy
 
@@ -468,7 +496,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: rule evaluation, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: persisted qualification results, rules combined within a component, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 

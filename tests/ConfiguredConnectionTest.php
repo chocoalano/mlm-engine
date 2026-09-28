@@ -19,6 +19,10 @@ use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
+use PandaBear\Mlm\Planning\Rules\MetricCondition;
+use PandaBear\Mlm\Planning\Rules\RuleDefinition;
+use PandaBear\Mlm\Qualification\QualificationContext;
+use PandaBear\Mlm\Qualification\QualificationEngine;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
@@ -221,6 +225,20 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_components')->count());
         $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_rules')->count());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_components'));
+    }
+
+    public function test_a_rule_is_evaluated_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $member = Member::factory()->for($plan->program)->create();
+        $this->record($member, '150', 'order:ORD-1');
+        $rule = $this->validatedRule(RuleDefinition::all(MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100')), $plan);
+
+        $decision = $this->app->make(QualificationEngine::class)->evaluate($rule, new QualificationContext($member));
+
+        $this->assertTrue($decision->qualified);
+        $this->assertSame('150', $decision->toArray()['trace']['children'][0]['value']);
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_rules'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

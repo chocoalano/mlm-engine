@@ -50,6 +50,15 @@ final readonly class MetricValue implements Stringable
         return $this->quantity->equals($other->quantity);
     }
 
+    /**
+     * -1, 0 or 1 as this value is below, equal to or above `$other`, compared
+     * exactly at any size — never through a float.
+     */
+    public function compare(self $other): int
+    {
+        return $this->quantity->compare($other->quantity);
+    }
+
     public function __toString(): string
     {
         return $this->value();

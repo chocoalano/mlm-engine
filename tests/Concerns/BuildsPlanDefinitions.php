@@ -6,6 +6,7 @@ namespace PandaBear\Mlm\Tests\Concerns;
 
 use Illuminate\Support\Facades\DB;
 use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\PlanRule;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Planning\DefinitionInput;
 use PandaBear\Mlm\Planning\PlanComponentDriverRegistry;
@@ -91,6 +92,22 @@ trait BuildsPlanDefinitions
         $this->editor()->addRule($component, 'qualifies', 'Qualifies', $this->qualifyingRule());
 
         return $version;
+    }
+
+    /**
+     * A rule with this definition in a validated version of `$plan`: the
+     * rule as stored, ready to evaluate.
+     */
+    protected function validatedRule(RuleDefinition $definition, ?Plan $plan = null, string $key = 'rule'): PlanRule
+    {
+        $this->criteriaDriver();
+        $version = $this->draft($plan);
+        $component = $this->editor()->addComponent($version, 'entry', 'test.criteria', 'Entry criteria', ['mode' => 'lenient']);
+        $rule = $this->editor()->addRule($component, $key, 'Rule', $definition);
+
+        $this->lifecycle()->markValidated($version);
+
+        return PlanRule::query()->findOrFail($rule->id);
     }
 
     /**

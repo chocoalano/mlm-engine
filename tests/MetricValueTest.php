@@ -31,4 +31,12 @@ final class MetricValueTest extends TestCase
             $this->assertInstanceOf(InvalidVolumeEntry::class, $exception->getPrevious());
         }
     }
+
+    public function test_values_compare_exactly_not_as_text_or_floats(): void
+    {
+        $this->assertSame(-1, MetricValue::of('9')->compare(MetricValue::of('10')));
+        $this->assertSame(0, MetricValue::of('2.50')->compare(MetricValue::of('2.5')));
+        $this->assertSame(1, MetricValue::of('0.000001')->compare(MetricValue::of('-1000')));
+        $this->assertSame(1, MetricValue::of('9007199254740993')->compare(MetricValue::of('9007199254740992')));
+    }
 }

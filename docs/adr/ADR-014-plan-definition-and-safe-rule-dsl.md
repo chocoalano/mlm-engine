@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.4.
+Accepted — Phase 2.4. Amended in Phase 2.5: the rules are now evaluated, one chosen rule at a time (ADR-015).
 
 ## Context
 
@@ -37,7 +37,7 @@ Configuration lives in the database and is edited by people, so it must never be
 ## Consequences
 
 - A plan version can now hold real, auditable configuration, and that configuration is immutable from the moment it is validated.
-- Nothing is evaluated: there is no rule evaluator, qualification, rank or commission, and no method answers true or false for a member. The language fixes what a future evaluator must support — including `between` being inclusive — without committing to how.
+- Nothing is evaluated: there is no rule evaluator, qualification, rank or commission, and no method answers true or false for a member. The language fixes what a future evaluator must support — including `between` being inclusive — without committing to how. Since Phase 2.5 `QualificationEngine` evaluates one stored rule of a validated version (ADR-015); ranks and commission are still absent.
 - Periods are not part of the language: a metric's period will come from the evaluation context, not from a rule.
 - Raw SQL can still write anything to these tables, bypassing the editor, the lifecycle and every check, as for every other table (ADR-005, ADR-007). Reading such data through the models, the validator or the cloner fails loudly instead of misreading it.
 - An application that relied on `Metric` alone keeps working; to name its metric in a plan rule it opts into `PlanConfigurableMetric`.
