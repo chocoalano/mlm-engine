@@ -12,15 +12,17 @@ use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
-use PandaBear\Mlm\Tests\Concerns\BuildsSponsorTrees;
+use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 
 /**
- * The database backs the genealogy's portable invariants on its own, and the
- * edge model cannot be used to write around the service.
+ * The database backs the genealogy's local invariants on its own — one
+ * sponsor edge per member, one path per pair, foreign keys — and the edge
+ * model cannot be used to write around the service. None of this makes a raw
+ * edge write cycle-safe: graph correctness belongs to SponsorGenealogy.
  */
 final class SponsorGenealogySchemaTest extends DatabaseTestCase
 {
-    use BuildsSponsorTrees;
+    use BuildsGenealogies;
 
     public function test_the_database_allows_one_sponsor_edge_per_member(): void
     {

@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 final class MigrationTest extends TestCase
 {
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -74,6 +74,16 @@ final class MigrationTest extends TestCase
         );
     }
 
+    public function test_the_placement_edges_table_has_exactly_the_minimum_columns(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'member_id', 'parent_id', 'placed_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_placement_edges'),
+        );
+    }
+
     public function test_the_genealogy_paths_table_has_exactly_the_minimum_columns(): void
     {
         $this->artisan('migrate')->assertSuccessful();
@@ -96,6 +106,7 @@ final class MigrationTest extends TestCase
         $this->assertSame([['program_id', 'code']], $this->uniqueIndexColumns('mlm_plans'));
         $this->assertSame([['plan_id', 'version']], $this->uniqueIndexColumns('mlm_plan_versions'));
         $this->assertSame([['member_id']], $this->uniqueIndexColumns('mlm_sponsor_edges'));
+        $this->assertSame([['member_id']], $this->uniqueIndexColumns('mlm_placement_edges'));
     }
 
     public function test_the_genealogy_indexes_serve_both_directions(): void
@@ -110,8 +121,20 @@ final class MigrationTest extends TestCase
         // The reverse direction, for ancestors.
         $this->assertContains(['tree_type', 'descendant_id', 'depth'], $paths->pluck('columns')->all());
 
-        // Who a sponsor sponsored directly.
+        // Who a sponsor sponsored directly; who is placed directly under a parent.
         $this->assertContains(['sponsor_id'], collect(Schema::getIndexes('mlm_sponsor_edges'))->pluck('columns')->all());
+        $this->assertContains(['parent_id'], collect(Schema::getIndexes('mlm_placement_edges'))->pluck('columns')->all());
+    }
+
+    public function test_the_placement_edge_key_is_a_ulid(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $id = collect(Schema::getColumns('mlm_placement_edges'))->firstWhere('name', 'id');
+
+        $this->assertIsArray($id);
+        $this->assertFalse($id['auto_increment']);
+        $this->assertSame(['id'], collect(Schema::getIndexes('mlm_placement_edges'))->firstWhere('primary', true)['columns'] ?? null);
     }
 
     /**
@@ -127,6 +150,8 @@ final class MigrationTest extends TestCase
             'a sponsor edge names its sponsor' => ['mlm_sponsor_edges', 'sponsor_id', 'mlm_members'],
             'a path names its ancestor' => ['mlm_genealogy_paths', 'ancestor_id', 'mlm_members'],
             'a path names its descendant' => ['mlm_genealogy_paths', 'descendant_id', 'mlm_members'],
+            'a placement edge names its member' => ['mlm_placement_edges', 'member_id', 'mlm_members'],
+            'a placement edge names its parent' => ['mlm_placement_edges', 'parent_id', 'mlm_members'],
         ];
     }
 

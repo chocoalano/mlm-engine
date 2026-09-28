@@ -11,12 +11,12 @@ use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
-use PandaBear\Mlm\Tests\Concerns\BuildsSponsorTrees;
+use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 final class SponsorAssignmentTest extends DatabaseTestCase
 {
-    use BuildsSponsorTrees;
+    use BuildsGenealogies;
 
     public function test_a_root_member_receives_its_first_sponsor(): void
     {
