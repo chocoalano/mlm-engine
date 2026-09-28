@@ -9,17 +9,22 @@ use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
+use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
+use PandaBear\Mlm\Tests\Concerns\BuildsSponsorTrees;
 
 /**
  * `mlm.database.connection` names a connection other than the default, and
- * the migrations, the models and the lifecycle's transactions all follow it.
+ * the migrations, the models, the plan lifecycle and the sponsor genealogy
+ * all follow it.
  */
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions'];
+    use BuildsSponsorTrees;
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths'];
+
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class];
 
     protected function defineEnvironment($app): void
     {
@@ -69,6 +74,20 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertDatabaseHas('mlm_plan_versions', ['id' => $v1->id, 'status' => 'superseded'], 'mlm');
         $this->assertDatabaseHas('mlm_plan_versions', ['id' => $v2->id, 'status' => 'active'], 'mlm');
         $this->assertTrue($plan->currentActiveVersion()?->is($v2));
+    }
+
+    public function test_the_sponsor_genealogy_writes_and_reads_on_the_configured_connection(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'Alice', 'Bob', 'Charlie');
+
+        $this->sponsorTree($members, ['Alice' => ['Bob'], 'Bob' => ['Charlie']]);
+
+        $this->assertSame(['Alice > Bob', 'Bob > Charlie'], $this->genealogyState('mlm')['edges']);
+        $this->assertCount(6, $this->genealogyState('mlm')['paths']);
+        $this->assertSame(['Bob@1', 'Charlie@2'], $this->relatives($this->genealogy()->descendants($members['Alice'])));
+        $this->assertSame(['Bob@1', 'Alice@2'], $this->relatives($this->genealogy()->ancestors($members['Charlie'])));
+        $this->assertTrue($this->genealogy()->directSponsor($members['Bob'])?->is($members['Alice']));
+        $this->assertSame(['Charlie'], $this->genealogy()->directMembers($members['Bob'])->pluck('member_code')->all());
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

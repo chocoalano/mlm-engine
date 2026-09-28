@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — and plan versioning. Plan rules, genealogy and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning and the sponsor genealogy. Plan rules, placement and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -65,6 +65,8 @@ php artisan migrate
 | `mlm_members` | members: `id`, `program_id`, `member_code`, `external_type`, `external_id`, `joined_at` |
 | `mlm_plans` | plans: `id`, `program_id`, `code`, `name` |
 | `mlm_plan_versions` | plan versions: `id`, `plan_id`, `version`, `status`, and one timestamp per lifecycle step |
+| `mlm_sponsor_edges` | direct sponsorships: `id`, `member_id`, `sponsor_id`, `assigned_at` |
+| `mlm_genealogy_paths` | every ancestor/descendant pair: `tree_type`, `ancestor_id`, `descendant_id`, `depth` |
 
 Primary keys are ULIDs. The tables and the models use the connection named by `mlm.database.connection` — the application's default when it is not set.
 
@@ -158,6 +160,45 @@ draft → validated → published → active → superseded → archived
 
 Plan versions do not carry any rules yet: there is nothing to calculate with.
 
+## Sponsor genealogy
+
+The sponsor genealogy records who sponsored whom within a program. It is not a placement structure: where a member sits in a binary or matrix network is a separate concept, and it is **not implemented yet**.
+
+### Direct sponsor
+
+```php
+use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+
+$genealogy = app(SponsorGenealogy::class);
+
+$genealogy->assignSponsor($bob, $alice);   // Alice sponsored Bob
+
+$genealogy->directSponsor($bob);           // Alice, or null for a root
+$genealogy->directMembers($alice);         // everyone Alice sponsored directly
+```
+
+- A member has at most one sponsor, and a member without one is a root. A program may have many roots.
+- A sponsor may sponsor any number of members.
+- The member and its sponsor must be in the same program. A member cannot sponsor itself.
+- A sponsor is assigned once. There is no reassignment or removal yet.
+- A member that already sponsors others can still receive its first sponsor; its whole subtree is attached beneath that sponsor.
+
+### Ancestors and descendants
+
+```php
+$genealogy->ancestors($diana);                 // Bob (depth 1), Alice (depth 2)
+$genealogy->descendants($alice);               // nearest first
+$genealogy->descendants($alice, maxDepth: 1);  // direct members only
+```
+
+Both return `SponsorRelative` objects — the `member` and its `depth`, the number of sponsorship steps between them — nearest first. The member itself is never included. Results stay within the member's program.
+
+### Cycle prevention
+
+A member cannot be sponsored by anyone in its own sponsor subtree: if Alice sponsored Bob and Bob sponsored Charlie, Charlie cannot sponsor Alice. Refused assignments throw `InvalidSponsorAssignment` and change nothing. Every assignment runs in one transaction.
+
+Ancestry is read from a closure table, never walked recursively. A member taking part in the sponsor tree cannot be deleted.
+
 The design decisions are recorded in [`docs/adr`](docs/adr).
 
 ## Configuration
@@ -178,7 +219,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: plan components, rules and parameters, sponsor and placement genealogy, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: sponsor reassignment and correction, placement genealogy, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 
