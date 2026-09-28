@@ -109,6 +109,22 @@ final class MigrationTest extends TestCase
         $this->assertFalse($quantity['nullable']);
     }
 
+    public function test_a_volume_entry_is_keyed_by_its_id_and_may_reference_another_entry(): void
+    {
+        // The self-reference once failed on PostgreSQL because the foreign
+        // key was added before the primary key. Running this on PostgreSQL
+        // is the regression check.
+        $this->artisan('migrate')->assertSuccessful();
+
+        $primary = collect(Schema::getIndexes('mlm_volume_entries'))->firstWhere('primary', true);
+        $reversal = collect(Schema::getForeignKeys('mlm_volume_entries'))->firstWhere('columns', ['reversal_of_id']);
+
+        $this->assertSame(['id'], $primary['columns'] ?? null);
+        $this->assertIsArray($reversal);
+        $this->assertSame('mlm_volume_entries', $reversal['foreign_table']);
+        $this->assertSame(['id'], $reversal['foreign_columns']);
+    }
+
     public function test_the_volume_indexes_serve_replays_reversals_and_member_totals(): void
     {
         $this->artisan('migrate')->assertSuccessful();

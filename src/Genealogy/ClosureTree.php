@@ -31,8 +31,13 @@ final readonly class ClosureTree
 
     /**
      * Fresh copies of both members, locked in key order — the same order for
-     * every write, whichever way round they were passed — so two writes
-     * sharing a member cannot deadlock on each other.
+     * every write, whichever way round they were passed.
+     *
+     * A shared lock: it keeps the two rows as read until the write commits,
+     * and the program lock taken next is what makes writes wait for each
+     * other. An exclusive lock here would deadlock: a write holding it while
+     * it waits for the program blocks the write that holds the program, whose
+     * foreign keys read-lock every member its new paths name.
      *
      * @return array{Member, Member} in the order given
      */
@@ -43,7 +48,7 @@ final readonly class ClosureTree
         $locked = $first->newQuery()
             ->whereKey($ids)
             ->orderBy($first->getKeyName())
-            ->lockForUpdate()
+            ->sharedLock()
             ->get()
             ->keyBy($first->getKeyName());
 

@@ -21,7 +21,12 @@ return new class extends Migration
 
     public function up(): void
     {
-        Schema::create('mlm_members', function (Blueprint $table): void {
+        // Identifiers compare exactly on every database. MySQL's default
+        // collations ignore letter case, so there they are made binary;
+        // SQLite and PostgreSQL already compare exactly.
+        $exact = in_array(Schema::getConnection()->getDriverName(), ['mysql', 'mariadb'], true) ? 'utf8mb4_bin' : null;
+
+        Schema::create('mlm_members', function (Blueprint $table) use ($exact): void {
             $table->ulid('id')->primary();
 
             // Restrict, not cascade: a program with members cannot be deleted
@@ -29,9 +34,9 @@ return new class extends Migration
             // that depend on members exist.
             $table->foreignUlid('program_id')->constrained('mlm_programs')->restrictOnDelete();
 
-            $table->string('member_code', 64);
-            $table->string('external_type', 64)->nullable();
-            $table->string('external_id', 128)->nullable();
+            $table->string('member_code', 64)->collation($exact);
+            $table->string('external_type', 64)->collation($exact)->nullable();
+            $table->string('external_id', 128)->collation($exact)->nullable();
             $table->dateTime('joined_at');
             $table->timestamps();
 

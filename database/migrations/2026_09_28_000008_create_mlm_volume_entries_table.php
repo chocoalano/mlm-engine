@@ -21,9 +21,14 @@ return new class extends Migration
 
     public function up(): void
     {
+        // Identifiers compare exactly on every database. MySQL's default
+        // collations ignore letter case, so there they are made binary;
+        // SQLite and PostgreSQL already compare exactly.
+        $exact = in_array(Schema::getConnection()->getDriverName(), ['mysql', 'mariadb'], true) ? 'utf8mb4_bin' : null;
+
         // Immutable history: an entry is never updated or deleted, and a
         // correction is a second entry that reverses the first.
-        Schema::create('mlm_volume_entries', function (Blueprint $table): void {
+        Schema::create('mlm_volume_entries', function (Blueprint $table) use ($exact): void {
             // The primary key is declared explicitly, before any foreign key.
             // A fluent ->primary() is added after them, and PostgreSQL then
             // refuses the self-reference below (reversal_of_id -> id) because
@@ -37,15 +42,15 @@ return new class extends Migration
             $table->foreignUlid('program_id')->constrained('mlm_programs')->restrictOnDelete();
             $table->foreignUlid('member_id')->constrained('mlm_members')->restrictOnDelete();
 
-            $table->string('type', 64);
+            $table->string('type', 64)->collation($exact);
 
             // Millionths of a unit, as an integer: exact on every database.
             // DECIMAL is stored as a float on SQLite.
             $table->bigInteger('quantity_millionths');
 
-            $table->string('source_type', 64);
-            $table->string('source_id', 128);
-            $table->string('idempotency_key', 191);
+            $table->string('source_type', 64)->collation($exact);
+            $table->string('source_id', 128)->collation($exact);
+            $table->string('idempotency_key', 191)->collation($exact);
             $table->dateTime('effective_at');
 
             // At most one reversal per entry.

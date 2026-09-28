@@ -31,7 +31,20 @@
         }
     },
     "scripts": {
-        "test": "@php vendor/bin/phpunit"
+        "test": "@php vendor/bin/phpunit",
+        "test:mysql": [
+            "@putenv MLM_TEST_DATABASE=mysql",
+            "@php vendor/bin/phpunit"
+        ],
+        "test:pgsql": [
+            "@putenv MLM_TEST_DATABASE=pgsql",
+            "@php vendor/bin/phpunit"
+        ]
+    },
+    "scripts-descriptions": {
+        "test": "Run the test suite on in-memory SQLite.",
+        "test:mysql": "Run the test suite on the MySQL test database named by the MLM_TEST_MYSQL_* variables.",
+        "test:pgsql": "Run the test suite on the PostgreSQL test database named by the MLM_TEST_PGSQL_* variables."
     },
     "extra": {
         "laravel": {

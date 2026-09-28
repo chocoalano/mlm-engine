@@ -7,6 +7,7 @@ namespace PandaBear\Mlm\Tests;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Orchestra\Testbench\Attributes\RequiresDatabase;
 use PandaBear\Mlm\Exceptions\InvalidVolumeEntry;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
@@ -108,6 +109,7 @@ final class VolumeRecordingTest extends DatabaseTestCase
         $this->assertSame(999_999_999_999_999_999, DB::table('mlm_volume_entries')->value('quantity_millionths'));
     }
 
+    #[RequiresDatabase('sqlite')]
     public function test_the_exact_millionths_string_is_stored_as_an_integer(): void
     {
         $this->record(Member::factory()->create(), '25.5', 'k');

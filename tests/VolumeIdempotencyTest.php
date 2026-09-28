@@ -38,6 +38,18 @@ final class VolumeIdempotencyTest extends DatabaseTestCase
         $this->assertTrue($replay->is($first));
     }
 
+    public function test_a_replay_differing_only_below_the_second_is_the_same_request(): void
+    {
+        $member = Member::factory()->create();
+
+        $first = $this->record($member, '1', 'k', at: CarbonImmutable::parse('2026-06-01 12:00:00.250'));
+        $replay = $this->record($member, '1', 'k', at: CarbonImmutable::parse('2026-06-01 12:00:00.999'));
+
+        // Stored to the second, never rounded up by the database.
+        $this->assertTrue($replay->is($first));
+        $this->assertSame('2026-06-01 12:00:00', $first->fresh()?->effective_at->format('Y-m-d H:i:s'));
+    }
+
     /**
      * @return array<string, array{array<string, mixed>, string}>
      */

@@ -18,11 +18,11 @@ Network plans place members in a structure — typically under someone other tha
 - **The closure table is reused.** Placement paths live in `mlm_genealogy_paths` under `tree_type = 'placement'`, with the same semantics, self paths and set-based attachment as sponsor paths (ADR-007). The schema did not change; the existing keys and indexes already lead with `tree_type`.
 - **No position, slot, side or leg.** The generic layer records only which member is the structural parent. A generic position column would carry meanings — left/right, slot 1..n — that the core cannot validate. Position storage waits for the first strategy that defines it. `directChildren()` is ordered by `placed_at`, which is chronology, not a slot.
 - **No plan dependency, no calculation data.** Placement belongs to program and member. Plan-specific policies will later decide *how* a placement is chosen or validated; the stored relationship stays plain graph data.
-- **Same write discipline as sponsorship.** `PlacementEdge` is read-only through Eloquent. `place()` locks both members in key order, then the program row, re-reads everything inside one transaction, and writes the edge and its paths together.
+- **Same write discipline as sponsorship.** `PlacementEdge` is read-only through Eloquent. `place()` locks both members in key order with a shared lock, then the program row exclusively (ADR-006 explains why the member lock is shared), re-reads everything inside one transaction, and writes the edge and its paths together.
 
 ## Consequences
 
 - Sponsorship and placement can diverge freely, and each is queried on its own terms.
-- Sponsor and placement writes both lock the program row, so within one program they serialise against each other as well as among themselves. That is correctness first; a finer lock would need benchmarks to justify it. The serialisation is designed for MySQL and PostgreSQL row locks, and has not been tested against real concurrent sessions — SQLite, which the suite runs on, does not exercise `FOR UPDATE`.
+- Sponsor and placement writes both lock the program row, so within one program they serialise against each other as well as among themselves. That is correctness first; a finer lock would need benchmarks to justify it. The serialisation relies on MySQL and PostgreSQL row locks and is exercised with real concurrent sessions by the opt-in real-database suite; SQLite, which the default suite runs on, does not exercise `FOR UPDATE`.
 - A member that takes part in the placement tree — placed, parent, or root with only its self path — cannot be deleted; its edges and paths restrict it.
 - Binary, matrix and automatic placement are strategies still to come. They will build on this graph rather than change it.

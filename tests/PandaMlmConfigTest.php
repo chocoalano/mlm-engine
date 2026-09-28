@@ -6,6 +6,7 @@ namespace PandaBear\Mlm\Tests;
 
 use PandaBear\Mlm\Exceptions\InvalidMlmConfiguration;
 use PandaBear\Mlm\Support\PandaMlmConfig;
+use PandaBear\Mlm\Tests\Database\ExternalDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 final class PandaMlmConfigTest extends TestCase
@@ -14,7 +15,17 @@ final class PandaMlmConfigTest extends TestCase
     {
         // Both sides read the same environment, so this holds whatever the
         // developer's shell has set.
-        $this->assertSame($this->packageConfig(), $this->app->make('config')->get('mlm'));
+        $expected = $this->packageConfig();
+
+        // A run against a real database points the package at it, as an
+        // application would.
+        $external = ExternalDatabase::selected();
+
+        if ($external !== null) {
+            $expected['database']['connection'] = $external->connection;
+        }
+
+        $this->assertSame($expected, $this->app->make('config')->get('mlm'));
     }
 
     public function test_every_key_is_present(): void

@@ -21,9 +21,14 @@ return new class extends Migration
 
     public function up(): void
     {
-        Schema::create('mlm_programs', function (Blueprint $table): void {
+        // Identifiers compare exactly on every database. MySQL's default
+        // collations ignore letter case, so there they are made binary;
+        // SQLite and PostgreSQL already compare exactly.
+        $exact = in_array(Schema::getConnection()->getDriverName(), ['mysql', 'mariadb'], true) ? 'utf8mb4_bin' : null;
+
+        Schema::create('mlm_programs', function (Blueprint $table) use ($exact): void {
             $table->ulid('id')->primary();
-            $table->string('code', 64)->unique();
+            $table->string('code', 64)->collation($exact)->unique();
             $table->string('name');
             $table->timestamps();
         });

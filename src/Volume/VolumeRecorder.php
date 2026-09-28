@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Volume;
 
 use Illuminate\Database\Connection;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Database\UniqueConstraintViolationException;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
@@ -52,7 +54,7 @@ final class VolumeRecorder
         try {
             return $this->insert($connection, $row);
         } catch (UniqueConstraintViolationException $exception) {
-            return $this->replay($this->findByKey($connection, $row) ?? throw $exception, $row);
+            return $this->replay($this->findByKey($connection, $row, lock: true) ?? throw $exception, $row);
         }
     }
 
@@ -95,13 +97,13 @@ final class VolumeRecorder
         } catch (UniqueConstraintViolationException $exception) {
             // Lost a race: the same key was written, or the entry was
             // reversed under another key.
-            $existing = $this->findByKey($connection, $row);
+            $existing = $this->findByKey($connection, $row, lock: true);
 
             if ($existing !== null) {
                 return $this->replay($existing, $row);
             }
 
-            $this->assertNotReversed($connection, $original);
+            $this->assertNotReversed($connection, $original, lock: true);
 
             throw $exception;
         }
@@ -130,13 +132,19 @@ final class VolumeRecorder
     }
 
     /**
+     * After a lost race, `$lock` makes the read a locking one, which sees the
+     * row that won. A plain read inside a caller's transaction on MySQL sees
+     * the snapshot taken by that transaction's first read, from before the
+     * row was committed.
+     *
      * @param  array<string, mixed>  $row
      */
-    private function findByKey(Connection $connection, array $row): ?VolumeEntry
+    private function findByKey(Connection $connection, array $row, bool $lock = false): ?VolumeEntry
     {
         return VolumeEntry::on($connection->getName())
             ->where('program_id', $row['program_id'])
             ->where('idempotency_key', $row['idempotency_key'])
+            ->when($lock, static fn (Builder $query): Builder => $query->sharedLock())
             ->first();
     }
 
@@ -179,9 +187,12 @@ final class VolumeRecorder
         return $existing;
     }
 
-    private function assertNotReversed(Connection $connection, VolumeEntry $original): void
+    private function assertNotReversed(Connection $connection, VolumeEntry $original, bool $lock = false): void
     {
-        $reversalId = $connection->table(self::TABLE)->where('reversal_of_id', $original->getKey())->value('id');
+        $reversalId = $connection->table(self::TABLE)
+            ->where('reversal_of_id', $original->getKey())
+            ->when($lock, static fn (QueryBuilder $query): QueryBuilder => $query->sharedLock())
+            ->value('id');
 
         if (is_string($reversalId)) {
             throw InvalidVolumeReversal::alreadyReversed($original, $reversalId);
