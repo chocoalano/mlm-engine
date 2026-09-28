@@ -179,6 +179,26 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_volume_entries'));
     }
 
+    public function test_network_metrics_resolve_from_the_configured_connection(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'Alice', 'Bob', 'Charlie');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->sponsorTree($members, ['Alice' => ['Bob']]);
+        $this->placementTree($members, ['Alice' => ['Charlie']]);
+
+        $this->record($members['Bob'], '20', 'order:ORD-1', at: CarbonImmutable::parse('2026-02-01 00:00:00'));
+        $this->reverse($this->record($members['Bob'], '5', 'order:ORD-2', at: CarbonImmutable::parse('2026-02-01 00:00:00')), 'refund:RF-1');
+        $this->record($members['Charlie'], '7', 'order:ORD-3', at: CarbonImmutable::parse('2026-02-01 00:00:00'));
+
+        // Genealogy and volume exist only on [mlm]: a query on the default
+        // connection would fail, not return zero.
+        $engine = $this->app->make(MetricEngine::class);
+
+        $this->assertSame('20', $engine->resolve('sponsor.network.volume', new MetricContext($members['Alice'], ['type' => 'sales']))->value());
+        $this->assertSame('7', $engine->resolve('placement.network.volume', new MetricContext($members['Alice'], ['type' => 'sales', 'max_depth' => 1]))->value());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_genealogy_paths'));
+    }
+
     public function test_a_connection_set_on_the_model_still_wins(): void
     {
         foreach (self::MODELS as $model) {

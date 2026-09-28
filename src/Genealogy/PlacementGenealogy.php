@@ -84,10 +84,11 @@ final class PlacementGenealogy
             }
 
             // One moment for the whole placement: the edge, any self path it
-            // needs and every path it creates take effect together.
+            // needs and every path it creates take effect together — now,
+            // floored by the moments already in the two parts it joins.
             $edge = new PlacementEdge;
             $id = $edge->newUniqueId();
-            $at = EffectiveMoment::of($edge->freshTimestamp());
+            $at = $this->tree->joinMoment($connection, $parent->getKey(), $member->getKey(), EffectiveMoment::of($edge->freshTimestamp()));
 
             $this->tree->ensureSelfPaths($connection, [$member->getKey(), $parent->getKey()], $at);
 
