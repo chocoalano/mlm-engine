@@ -12,9 +12,9 @@ use PandaBear\Mlm\Exceptions\UnknownPlanComponentDriver;
  * The trusted component drivers a plan definition can select, by key.
  *
  * Bound as an application singleton: its registrations are configuration,
- * made once while the application boots. The package registers no driver of
- * its own yet; an application or package adds its own from a service
- * provider:
+ * made once while the application boots. The package registers its own rank
+ * ladder, "rank.ladder"; an application or package adds its own drivers from
+ * a service provider:
  *
  *   $this->callAfterResolving(PlanComponentDriverRegistry::class, function (PlanComponentDriverRegistry $drivers): void {
  *       $drivers->register(new AcmeBonusDriver);

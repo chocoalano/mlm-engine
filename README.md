@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank persistence and promotion, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -153,7 +153,7 @@ draft → validated → published → active → superseded → archived
 
 A version's definition is its **components**, each with **rules**. A draft is edited; from `validated` on, the definition never changes.
 
-- A component selects a **driver** by key: trusted code the application registers. The database stores the key, never a class name. The package ships no driver yet; business drivers arrive with their domains.
+- A component selects a **driver** by key: trusted code the application registers. The database stores the key, never a class name. The package ships one, `rank.ladder` (see [Rank](#rank)); applications register their own beside it.
 - A component's parameters are plain JSON data for its driver. Nothing in them is ever run.
 - A rule is a tree in a small, safe language: groups (`all`, `any`) of conditions on registered metrics, with the operators `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in` and `between` (both bounds included) and exact decimal operands. No expressions, formulas, SQL or code.
 - A rule may only name a metric that implements `PlanConfigurableMetric` — the three built-ins do — so its parameters can be checked before anything is resolved.
@@ -215,7 +215,7 @@ $next = app(PlanDefinitionCloner::class)->cloneToNewDraft($draft);   // the next
 - To change a validated, published or active definition, clone it into a new draft with `PlanDefinitionCloner`, edit the draft and validate it.
 - Read a definition through `$version->components`, `$component->rules` and `$rule->definition`. Components and rules are read-only through Eloquent.
 
-Rules are evaluated one at a time by the qualification engine below. Ranks and commission are not implemented.
+Rules are evaluated one at a time by the qualification engine below, and a rank ladder's rules by the rank engine after it. Commission is not implemented.
 
 ## Qualification
 
@@ -243,7 +243,57 @@ $decision->toArray();                        // identities, range and the full t
 - The member must belong to the rule's program. Rule, version and member are read from the database, not from the instances you pass.
 - Every condition's metric is resolved through the metric engine with the same range, and compared exactly. `between` includes both bounds. Every condition is evaluated and appears in the trace, with its value, even when the result was already decided.
 - `qualified` is false only when the rule was evaluated and does not hold. A draft, another program's member, a missing metric or a failing one throws `QualificationEvaluationException` instead.
-- Results are not stored, and nothing is written. Ranks and commission are not implemented.
+- Results are not stored, and nothing is written. Commission is not implemented.
+
+## Rank
+
+A **rank ladder** is a plan component with the built-in driver `rank.ladder`. Each of its rules is one rank: the rule's key is the rank's key, its name the rank's name, its position the rank's order — a larger position is a higher rank — and its definition what the rank requires. It is built with the editor, like any component:
+
+```php
+use PandaBear\Mlm\Planning\Rules\MetricCondition;
+use PandaBear\Mlm\Planning\Rules\RuleDefinition;
+
+$ladder = $editor->addComponent($draft, key: 'career-ranks', driver: 'rank.ladder', name: 'Career Ranks', parameters: []);
+
+$editor->addRule($ladder, key: 'bronze', name: 'Bronze', position: 10, definition: RuleDefinition::all(
+    MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100'),
+));
+$editor->addRule($ladder, key: 'silver', name: 'Silver', position: 20, definition: RuleDefinition::all(
+    MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100'),
+    MetricCondition::of('sponsor.network.volume', ['type' => 'sales'], '>=', '1000'),
+));
+
+$lifecycle->markValidated($draft);
+```
+
+- A ladder takes no parameters, needs at least one rank, and no two of its ranks may share a position; gaps are fine. A draft may break these while it is edited — `markValidated()` refuses it.
+- There is no rank table, rank editor or rank cloner: ladders are stored, edited, validated and cloned as plan definitions.
+
+The rank engine evaluates **one stored ladder, chosen by you**, for one member over an optional effective range `[from, until)`:
+
+```php
+use PandaBear\Mlm\Rank\RankContext;
+use PandaBear\Mlm\Rank\RankEngine;
+
+$decision = app(RankEngine::class)->evaluate(
+    $ladder,                                 // a rank.ladder PlanComponent of a validated version
+    new RankContext(
+        member: $member,
+        from: $start,                        // optional, included
+        until: $until,                       // optional, excluded
+    ),
+);
+
+$decision->selectedRank;                     // SelectedRank (key, name, position), or null
+$decision->toArray();                        // identities, range, selected rank, and every rank with its trace
+```
+
+- You select the ladder. The engine never picks a plan, the active version or a ladder, and never merges two ladders. A component of another driver is refused.
+- Every rank is qualified through the qualification engine, lowest position first, all with the same range — every one of them, whatever the others give — and each keeps its qualification trace.
+- The selected rank is the qualifying rank with the highest position. Ranks are independent: a higher rank does not need the lower ones — write their requirements into it if it should.
+- No qualifying rank gives `selectedRank` null: a decision, not an error. A draft ladder, another program's member, a broken ladder or a rank that cannot be evaluated throws `RankEvaluationException` instead — never a lower rank or null.
+- A ladder of any validated version — superseded and archived included — can be evaluated, and gives the rank as that version defines it.
+- A rank is derived, never stored: there is no current-rank field, rank history, promotion or demotion yet, and nothing is written.
 
 ## Sponsor genealogy
 
@@ -409,7 +459,7 @@ $totals->forMember($member, 'sales');                          // Quantity, reve
 $totals->forMember($member, 'sales', from: $june1, until: $july1);
 ```
 
-A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive); with both bounds, `from` must come before `until`. Totals cover the member's own entries only. **Network totals, running balances, qualification, rank, commission and wallets are not implemented yet.**
+A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive); with both bounds, `from` must come before `until`. Totals cover the member's own entries only. **Network totals, running balances, commission and wallets are not implemented yet.**
 
 Raw query-builder or SQL writes to `mlm_volume_entries` bypass every rule above. The database backs only its local invariants — one entry per key and program, one reversal per entry, foreign keys.
 
@@ -476,7 +526,7 @@ public function register(): void
 - Resolving an unknown key throws `UnknownMetric`; it never answers zero.
 - Metrics are trusted code registered at boot. Nothing — no class name, formula or SQL — is ever loaded from the database.
 
-Metrics only answer "what is the value". Qualification, rank and commission are not implemented.
+Metrics only answer "what is the value"; qualification and rank build on them. Commission is not implemented.
 
 ## Configuration
 
@@ -496,7 +546,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: persisted qualification results, rules combined within a component, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, calculation periods and runs, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 

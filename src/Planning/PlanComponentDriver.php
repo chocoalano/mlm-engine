@@ -11,9 +11,9 @@ use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
  * key, never a class name, and the key finds this already-registered object
  * in the `PlanComponentDriverRegistry`.
  *
- * For now a driver only judges its components' configuration, when a plan
- * version is validated. What a component does — qualify, rank, pay — belongs
- * to contracts of later phases, not to this one.
+ * A driver only judges its components' configuration, when a plan version is
+ * validated. What a component does is the work of the engine for its key —
+ * `RankEngine` for the package's "rank.ladder" — not of the driver.
  */
 interface PlanComponentDriver
 {

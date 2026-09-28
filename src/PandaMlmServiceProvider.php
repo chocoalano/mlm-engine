@@ -15,6 +15,7 @@ use PandaBear\Mlm\Planning\PlanComponentDriverRegistry;
 use PandaBear\Mlm\Planning\PlanDefinitionCloner;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
 use PandaBear\Mlm\Planning\PlanDefinitionValidator;
+use PandaBear\Mlm\Rank\RankLadderDriver;
 use PandaBear\Mlm\Support\PandaMlmConfig;
 
 final class PandaMlmServiceProvider extends ServiceProvider
@@ -42,10 +43,14 @@ final class PandaMlmServiceProvider extends ServiceProvider
             return $registry;
         });
 
-        // Shared for the same reason. No driver is built in yet: each business
-        // domain brings its own in its own phase; applications add theirs
-        // through register().
-        $this->app->singleton(PlanComponentDriverRegistry::class);
+        // Shared for the same reason. The built-in rank ladder goes through
+        // the same register() applications use for their own drivers.
+        $this->app->singleton(PlanComponentDriverRegistry::class, static function (Application $app): PlanComponentDriverRegistry {
+            $registry = new PlanComponentDriverRegistry;
+            $registry->register($app->make(RankLadderDriver::class));
+
+            return $registry;
+        });
 
         // Stateless services over the shared registries and the configured
         // connection.

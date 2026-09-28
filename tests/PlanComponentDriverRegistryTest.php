@@ -8,15 +8,34 @@ use PandaBear\Mlm\Exceptions\DuplicatePlanComponentDriver;
 use PandaBear\Mlm\Exceptions\InvalidPlanComponentDriver;
 use PandaBear\Mlm\Exceptions\UnknownPlanComponentDriver;
 use PandaBear\Mlm\Planning\PlanComponentDriverRegistry;
+use PandaBear\Mlm\Rank\RankLadderDriver;
 use PandaBear\Mlm\Tests\Fixtures\CriteriaDriver;
 use PandaBear\Mlm\Tests\Fixtures\ExampleDriverServiceProvider;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 final class PlanComponentDriverRegistryTest extends TestCase
 {
-    public function test_the_package_registers_no_driver_of_its_own(): void
+    public function test_the_package_registers_its_rank_ladder_and_nothing_else(): void
     {
-        $this->assertSame([], $this->app->make(PlanComponentDriverRegistry::class)->keys());
+        $registry = $this->app->make(PlanComponentDriverRegistry::class);
+
+        $this->assertSame(['rank.ladder'], $registry->keys());
+        $this->assertInstanceOf(RankLadderDriver::class, $registry->get('rank.ladder'));
+    }
+
+    public function test_no_application_driver_replaces_the_rank_ladder(): void
+    {
+        $registry = $this->app->make(PlanComponentDriverRegistry::class);
+        $builtIn = $registry->get('rank.ladder');
+
+        try {
+            $registry->register(new CriteriaDriver('rank.ladder'));
+            $this->fail('An application driver replaced the rank ladder.');
+        } catch (DuplicatePlanComponentDriver $exception) {
+            $this->assertStringContainsString('"rank.ladder" is already registered', $exception->getMessage());
+        }
+
+        $this->assertSame($builtIn, $registry->get('rank.ladder'));
     }
 
     public function test_the_registry_is_one_instance_for_the_application(): void
@@ -120,7 +139,7 @@ final class PlanComponentDriverRegistryTest extends TestCase
 
         $this->app->register(ExampleDriverServiceProvider::class);
 
-        $this->assertSame(['acme.example'], $registry->keys());
+        $this->assertSame(['acme.example', 'rank.ladder'], $registry->keys());
         $this->assertInstanceOf(CriteriaDriver::class, $registry->get('acme.example'));
     }
 }

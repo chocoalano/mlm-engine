@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.4. Amended in Phase 2.5: the rules are now evaluated, one chosen rule at a time (ADR-015).
+Accepted — Phase 2.4. Amended in Phase 2.5: the rules are now evaluated, one chosen rule at a time (ADR-015). Amended in Phase 2.6: `rank.ladder` is the first package-owned `PlanComponentDriver` (ADR-016).
 
 ## Context
 
@@ -14,7 +14,7 @@ Configuration lives in the database and is edited by people, so it must never be
 
 - **A version owns its whole definition.** Components belong to a `PlanVersion`, rules to a component. Nothing is attached to `Plan`, `Program` or `Member`. The definition is two relational tables, not one JSON document.
 - **Plan components** (`mlm_plan_components`, migration 000011): a ULID, the version, a machine `key` unique per version, a `driver` key, a human `name`, a `parameters` JSON object and a `position`. The same key may appear in other versions, which is what cloning relies on.
-- **Drivers are trusted code selected by key.** The component stores the driver's key — 1–100 lowercase letters, digits, `.`, `-` or `_` — never a class name. The key finds an already-registered `PlanComponentDriver` in the `PlanComponentDriverRegistry`, an application singleton filled at boot through `register()`, like `MetricRegistry` (ADR-011). An invalid key is refused, a second registration of a key is refused rather than replacing the first, and an unknown key fails. The package registers no driver of its own: the first real ones arrive with the business domains that need them.
+- **Drivers are trusted code selected by key.** The component stores the driver's key — 1–100 lowercase letters, digits, `.`, `-` or `_` — never a class name. The key finds an already-registered `PlanComponentDriver` in the `PlanComponentDriverRegistry`, an application singleton filled at boot through `register()`, like `MetricRegistry` (ADR-011). An invalid key is refused, a second registration of a key is refused rather than replacing the first, and an unknown key fails. The package registers no driver of its own: the first real ones arrive with the business domains that need them. Since Phase 2.6 it registers one, `rank.ladder`, through the same `register()` (ADR-016).
 - **A driver only validates, for now.** `validate(PlanComponentDefinition)` receives the complete component as read-only data — key, driver, name, parameters, position and its parsed rules in order — never a model, and may refuse it. There is no `execute()`: what a component does belongs to the contracts of later phases.
 - **Parameters are inert JSON data.** A JSON object — strings, numbers, booleans, null, lists and objects, nested at most 32 deep — stored with its keys in canonical order and read back the same way, whichever database stored it. Objects, closures, resources, enums, non-finite numbers and invalid UTF-8 are refused, not converted. What the values mean is the driver's business; nothing reads them as code.
 - **Plan rules** (`mlm_plan_rules`, migration 000012): a ULID, the component, a machine `key` unique per component, a `name`, a `definition` and a `position`. A rule is the relational audit boundary: a later trace can say which version, component and rule decided something, and a condition's place in the tree (`root.children[1]`) identifies it within its rule. Conditions have no ids or tables of their own.
@@ -37,7 +37,7 @@ Configuration lives in the database and is edited by people, so it must never be
 ## Consequences
 
 - A plan version can now hold real, auditable configuration, and that configuration is immutable from the moment it is validated.
-- Nothing is evaluated: there is no rule evaluator, qualification, rank or commission, and no method answers true or false for a member. The language fixes what a future evaluator must support — including `between` being inclusive — without committing to how. Since Phase 2.5 `QualificationEngine` evaluates one stored rule of a validated version (ADR-015); ranks and commission are still absent.
+- Nothing is evaluated: there is no rule evaluator, qualification, rank or commission, and no method answers true or false for a member. The language fixes what a future evaluator must support — including `between` being inclusive — without committing to how. Since Phase 2.5 `QualificationEngine` evaluates one stored rule of a validated version (ADR-015); since Phase 2.6 `RankEngine` evaluates a rank ladder through it (ADR-016). Commission is still absent.
 - Periods are not part of the language: a metric's period will come from the evaluation context, not from a rule.
 - Raw SQL can still write anything to these tables, bypassing the editor, the lifecycle and every check, as for every other table (ADR-005, ADR-007). Reading such data through the models, the validator or the cloner fails loudly instead of misreading it.
 - An application that relied on `Metric` alone keeps working; to name its metric in a plan rule it opts into `PlanConfigurableMetric`.

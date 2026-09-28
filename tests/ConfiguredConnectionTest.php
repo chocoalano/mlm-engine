@@ -23,6 +23,8 @@ use PandaBear\Mlm\Planning\Rules\MetricCondition;
 use PandaBear\Mlm\Planning\Rules\RuleDefinition;
 use PandaBear\Mlm\Qualification\QualificationContext;
 use PandaBear\Mlm\Qualification\QualificationEngine;
+use PandaBear\Mlm\Rank\RankContext;
+use PandaBear\Mlm\Rank\RankEngine;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
@@ -239,6 +241,25 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertTrue($decision->qualified);
         $this->assertSame('150', $decision->toArray()['trace']['children'][0]['value']);
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_rules'));
+    }
+
+    public function test_a_rank_ladder_is_defined_and_evaluated_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $member = Member::factory()->for($plan->program)->create();
+        $this->record($member, '150', 'order:ORD-1');
+        $ladder = $this->validatedLadder([
+            'bronze' => [10, RuleDefinition::all(MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100'))],
+            'silver' => [20, RuleDefinition::all(MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '200'))],
+        ], $plan);
+
+        $decision = $this->app->make(RankEngine::class)->evaluate($ladder, new RankContext($member));
+
+        $this->assertSame('mlm', $ladder->getConnectionName());
+        $this->assertSame('bronze', $decision->selectedRank?->key);
+        $this->assertSame('150', $decision->toArray()['ranks'][1]['trace']['children'][0]['value']);
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_rules')->where('plan_component_id', $ladder->id)->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_components'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

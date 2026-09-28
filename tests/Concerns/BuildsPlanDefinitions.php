@@ -6,6 +6,7 @@ namespace PandaBear\Mlm\Tests\Concerns;
 
 use Illuminate\Support\Facades\DB;
 use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\PlanRule;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Planning\DefinitionInput;
@@ -108,6 +109,40 @@ trait BuildsPlanDefinitions
         $this->lifecycle()->markValidated($version);
 
         return PlanRule::query()->findOrFail($rule->id);
+    }
+
+    /**
+     * A rank ladder added to the draft `$version` through the editor: one
+     * rule per rank — key => [position, requirement] — named after its key,
+     * added in the order given.
+     *
+     * @param  array<string, array{int, RuleDefinition}>  $ranks
+     */
+    protected function addLadder(PlanVersion $version, array $ranks, string $key = 'career-ranks', string $name = 'Career Ranks'): PlanComponent
+    {
+        $ladder = $this->editor()->addComponent($version, $key, 'rank.ladder', $name);
+
+        foreach ($ranks as $rank => [$position, $requirement]) {
+            $this->editor()->addRule($ladder, $rank, ucfirst($rank), $requirement, $position);
+        }
+
+        return PlanComponent::query()->findOrFail($ladder->id);
+    }
+
+    /**
+     * A rank ladder in a validated version of `$plan`: the ladder as stored,
+     * ready to evaluate.
+     *
+     * @param  array<string, array{int, RuleDefinition}>  $ranks
+     */
+    protected function validatedLadder(array $ranks, ?Plan $plan = null): PlanComponent
+    {
+        $version = $this->draft($plan);
+        $ladder = $this->addLadder($version, $ranks);
+
+        $this->lifecycle()->markValidated($version);
+
+        return $ladder;
     }
 
     /**

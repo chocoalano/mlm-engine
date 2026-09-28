@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.5.
+Accepted — Phase 2.5. Amended in Phase 2.6: `RankEngine` composes explicit qualification evaluations, one per rank of a ladder (ADR-016); qualification itself is unchanged.
 
 ## Context
 
