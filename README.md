@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, and the sponsor and placement genealogies. Plan rules, binary and matrix positioning, automatic placement and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, the sponsor and placement genealogies, and volume entries with idempotent recording and explicit reversal. Plan rules, network totals, qualification, rank, commission, wallets and ledgers, binary and matrix positioning, and automatic placement are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -68,6 +68,7 @@ php artisan migrate
 | `mlm_sponsor_edges` | direct sponsorships: `id`, `member_id`, `sponsor_id`, `assigned_at` |
 | `mlm_genealogy_paths` | every ancestor/descendant pair of either tree: `tree_type`, `ancestor_id`, `descendant_id`, `depth` |
 | `mlm_placement_edges` | direct placements: `id`, `member_id`, `parent_id`, `placed_at` |
+| `mlm_volume_entries` | immutable volume history: `program_id`, `member_id`, `type`, `quantity_millionths`, `source_type`, `source_id`, `idempotency_key`, `effective_at`, `reversal_of_id` |
 
 Primary keys are ULIDs. The tables and the models use the connection named by `mlm.database.connection` — the application's default when it is not set.
 
@@ -235,6 +236,73 @@ Both genealogies are written only through their services. Raw query-builder or S
 
 The design decisions are recorded in [`docs/adr`](docs/adr).
 
+## Volume
+
+Volume is a quantified business measurement attributed to a member — sales, points, any value a plan will later read. It is not money and not commission: recording it produces nothing else.
+
+### Recording
+
+```php
+use Carbon\CarbonImmutable;
+use PandaBear\Mlm\Volume\Quantity;
+use PandaBear\Mlm\Volume\RecordVolume;
+use PandaBear\Mlm\Volume\VolumeRecorder;
+
+$entry = app(VolumeRecorder::class)->record(new RecordVolume(
+    member: $member,
+    type: 'sales',                          // your own identifier; the package defines none
+    quantity: Quantity::of('25.5'),         // a decimal string or an integer — never a float
+    sourceType: 'order',
+    sourceId: 'ORD-123',
+    idempotencyKey: 'order:ORD-123:sales',
+    effectiveAt: CarbonImmutable::parse('2026-06-30 18:00'),
+));
+
+$entry->quantity->value();                  // "25.5"
+```
+
+- `type` and `sourceType` are 1–64 lowercase letters, digits, `.`, `-` or `_`. Invalid input is refused, never rewritten.
+- Quantities are exact to six decimal places. A seventh is refused, not rounded. Recorded quantities must be positive.
+- `effective_at` is when the activity counts, kept in the application's timezone; `created_at` is when it was stored.
+- The program is taken from the stored member.
+
+### Idempotent recording
+
+The idempotency key identifies the request within its program. Recording the same key again with the same member, type, quantity, source and effective moment returns the entry already recorded. The same key with anything different throws `ConflictingVolumeReplay`. The source alone is not unique: one order may produce several entries.
+
+### Explicit reversal
+
+Entries are immutable: they cannot be updated or deleted, not even through the model. A correction is a reversal — a second entry with the negated quantity, pointing at the original:
+
+```php
+use PandaBear\Mlm\Volume\ReverseVolume;
+
+app(VolumeRecorder::class)->reverse(new ReverseVolume(
+    entry: $entry,
+    sourceType: 'refund',
+    sourceId: 'RF-9',
+    idempotencyKey: 'refund:RF-9',
+    effectiveAt: CarbonImmutable::parse('2026-07-02 09:00'),
+));
+```
+
+An entry is reversed at most once, and a reversal cannot be reversed. Replaying the same reversal returns it.
+
+### Totals
+
+```php
+use PandaBear\Mlm\Volume\VolumeTotals;
+
+$totals = app(VolumeTotals::class);
+
+$totals->forMember($member, 'sales');                          // Quantity, reversals netted
+$totals->forMember($member, 'sales', from: $june1, until: $july1);
+```
+
+A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive). Totals cover the member's own entries only. **Network totals, running balances, qualification, rank, commission and wallets are not implemented yet.**
+
+Raw query-builder or SQL writes to `mlm_volume_entries` bypass every rule above. The database backs only its local invariants — one entry per key and program, one reversal per entry, foreign keys.
+
 ## Configuration
 
 `config/mlm.php` holds **technical** settings only — where the package stores, queues and caches. Business plan rules such as pairing ratios, matrix sizes, commission percentages and rank requirements will never live in this file; they belong to versioned plans in the database.
@@ -253,7 +321,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: network volume totals and metrics, running-balance projections, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 
