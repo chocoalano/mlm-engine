@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, the sponsor and placement genealogies, volume entries with idempotent recording and explicit reversal, and a metrics foundation. Plan rules, network metrics, qualification, rank, commission, wallets and ledgers, binary and matrix positioning, and automatic placement are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** Version 0.1 provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and a metrics foundation — a registry, an engine and the built-in `member.volume` metric. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Temporal genealogy, network metrics, plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -12,21 +12,10 @@ A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-
 
 ## Installation
 
-The package is not on Packagist yet. Add the repository to the application's `composer.json`:
-
-```json
-"repositories": [
-    {
-        "type": "vcs",
-        "url": "https://github.com/chocoalano/mlm-engine"
-    }
-]
-```
-
-Then require it:
+Install the package with Composer:
 
 ```bash
-composer require pandabear/mlm:dev-main
+composer require pandabear/mlm:^0.1
 ```
 
 Laravel's package discovery registers `PandaBear\Mlm\PandaMlmServiceProvider` automatically.
