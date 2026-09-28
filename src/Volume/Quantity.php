@@ -11,8 +11,10 @@ use Stringable;
  * An exact decimal quantity, held as its canonical string: no leading zeros,
  * no trailing fractional zeros, no sign on zero — "25", "25.5", "-0.125".
  *
- * Never a float. Stored as an integer count of millionths, so six decimal
- * places is the precision; a value with more is refused, never rounded.
+ * Never a float. Six decimal places is the precision; a value with more is
+ * refused, never rounded. There is no upper bound: a total may be far larger
+ * than anything one volume entry can store, and stays exact. The size of one
+ * stored entry is the volume recorder's rule, not this value's.
  */
 final readonly class Quantity implements Stringable
 {
@@ -20,12 +22,6 @@ final readonly class Quantity implements Stringable
      * Decimal places the package stores.
      */
     public const SCALE = 6;
-
-    /**
-     * Integer digits one recorded quantity may have: at most
-     * 999,999,999,999.999999, which fits a 64-bit count of millionths.
-     */
-    public const MAX_INTEGER_DIGITS = 12;
 
     private function __construct(private string $value) {}
 
@@ -56,16 +52,12 @@ final readonly class Quantity implements Stringable
             throw InvalidVolumeEntry::quantity($value, 'it has more than '.self::SCALE.' decimal places, and is not rounded');
         }
 
-        if (strlen($integer) > self::MAX_INTEGER_DIGITS) {
-            throw InvalidVolumeEntry::quantity($value, 'it has more than '.self::MAX_INTEGER_DIGITS.' integer digits');
-        }
-
         return self::canonical($parts[1], $integer, $fraction);
     }
 
     /**
      * From an integer count of millionths — the stored form, and the form a
-     * database sum returns. Given as a string, it may exceed a 64-bit integer.
+     * database sum returns. As a string it may exceed a 64-bit integer.
      */
     public static function fromMillionths(int|string $millionths): self
     {
@@ -83,15 +75,21 @@ final readonly class Quantity implements Stringable
     }
 
     /**
-     * The stored form. Exact for any quantity `of()` accepts.
+     * The quantity as a whole number of millionths, as an exact signed
+     * integer string — "25500000" for 25.5 — whatever its size. The inverse
+     * of `fromMillionths()`: never a PHP int, which would overflow.
      */
-    public function toMillionths(): int
+    public function toMillionths(): string
     {
         [$integer, $fraction] = explode('.', ltrim($this->value, '-')) + [1 => ''];
 
-        $millionths = (int) ($integer.str_pad($fraction, self::SCALE, '0'));
+        $digits = ltrim($integer.str_pad($fraction, self::SCALE, '0'), '0');
 
-        return $this->isNegative() ? -$millionths : $millionths;
+        if ($digits === '') {
+            return '0';
+        }
+
+        return ($this->isNegative() ? '-' : '').$digits;
     }
 
     public function negate(): self

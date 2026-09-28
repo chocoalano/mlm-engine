@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.0.
+Accepted — Phase 2.0. Amended in Phase 2.1: an empty or inverted range is refused, and the per-entry size limit is enforced when recording (ADR-010).
 
 ## Context
 
@@ -19,7 +19,7 @@ Every compensation plan consumes quantified business activity — sales, points,
 - **Concurrency.** Each operation writes one row. The unique keys on `(program_id, idempotency_key)` and on `reversal_of_id` are the backstop: a write that loses a race fails on the key and is resolved from the winning row — returned if identical, refused otherwise. The insert runs in its own nested transaction, so on PostgreSQL a duplicate-key failure inside a caller's transaction rolls back only a savepoint.
 - **Effective time.** `effective_at` is when the activity counts; `created_at` is when it was stored. It is kept in the application's timezone, to the second, so one instant given in two timezones is one moment — for storage and for replay comparison alike.
 - **Immutable, with explicit reversal.** Entries are never updated or deleted. `VolumeEntry` refuses creating, updating and deleting through Eloquent; `VolumeRecorder` is the only writer. A correction is a second entry with the negated quantity, the same program, member and type, its own source, key and effective moment, and `reversal_of_id` pointing at the original. An entry is reversed at most once, and a reversal cannot itself be reversed. Ordinary entries must be positive; zero and negative quantities are refused.
-- **Totals from history.** `VolumeTotals::forMember()` sums a member's entries of one type — reversals included, so a reversed entry nets to zero — optionally over the half-open effective range `[from, until)`.
+- **Totals from history.** `VolumeTotals::forMember()` sums a member's entries of one type — reversals included, so a reversed entry nets to zero — optionally over the half-open effective range `[from, until)`. With both bounds, `from` must come before `until`; an empty or inverted range is refused rather than answered with zero. Metrics use the same range rule (ADR-011).
 - **Deliberately absent.** No running-balance table: the entries are the only source of truth until performance requires a projection. No network aggregation: genealogy totals are a later metric concern. No `plan_id` or `plan_version_id`: activity exists independently of how a plan interprets it — a future calculation run decides which plan version reads it. No genealogy snapshot on entries.
 
 ## Consequences

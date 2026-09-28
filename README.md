@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, the sponsor and placement genealogies, and volume entries with idempotent recording and explicit reversal. Plan rules, network totals, qualification, rank, commission, wallets and ledgers, binary and matrix positioning, and automatic placement are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — plan versioning, the sponsor and placement genealogies, volume entries with idempotent recording and explicit reversal, and a metrics foundation. Plan rules, network metrics, qualification, rank, commission, wallets and ledgers, binary and matrix positioning, and automatic placement are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -262,7 +262,7 @@ $entry->quantity->value();                  // "25.5"
 ```
 
 - `type` and `sourceType` are 1–64 lowercase letters, digits, `.`, `-` or `_`. Invalid input is refused, never rewritten.
-- Quantities are exact to six decimal places. A seventh is refused, not rounded. Recorded quantities must be positive.
+- Quantities are exact to six decimal places. A seventh is refused, not rounded. A recorded quantity must be positive, with at most 12 integer digits; totals may be larger and stay exact.
 - `effective_at` is when the activity counts, kept in the application's timezone; `created_at` is when it was stored.
 - The program is taken from the stored member.
 
@@ -299,9 +299,53 @@ $totals->forMember($member, 'sales');                          // Quantity, reve
 $totals->forMember($member, 'sales', from: $june1, until: $july1);
 ```
 
-A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive). Totals cover the member's own entries only. **Network totals, running balances, qualification, rank, commission and wallets are not implemented yet.**
+A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive); with both bounds, `from` must come before `until`. Totals cover the member's own entries only. **Network totals, running balances, qualification, rank, commission and wallets are not implemented yet.**
 
 Raw query-builder or SQL writes to `mlm_volume_entries` bypass every rule above. The database backs only its local invariants — one entry per key and program, one reversal per entry, foreign keys.
+
+## Metrics
+
+A metric is a named numeric fact about a member, computed on demand from the package's data — never stored, and never a pass/fail judgement. Metrics are resolved by key through the `MetricEngine`:
+
+```php
+use PandaBear\Mlm\Metrics\MetricContext;
+use PandaBear\Mlm\Metrics\MetricEngine;
+
+$value = app(MetricEngine::class)->resolve('member.volume', new MetricContext(
+    member: $member,
+    parameters: ['type' => 'sales'],
+    from: $june1,                 // optional; [from, until), as for volume totals
+    until: $july1,
+));
+
+$value->value();                  // "1250.5" — an exact string, never a float
+```
+
+### Built-in: `member.volume`
+
+The member's own net volume of one type — reversals included — over the optional range. It requires the `type` parameter and refuses any other parameter. It never looks at the member's genealogy.
+
+### Your own metrics
+
+Implement `PandaBear\Mlm\Metrics\Metric` and register it from a service provider:
+
+```php
+use PandaBear\Mlm\Metrics\MetricRegistry;
+
+public function register(): void
+{
+    $this->callAfterResolving(MetricRegistry::class, function (MetricRegistry $metrics): void {
+        $metrics->register(new AcmeRetentionMetric);   // key(): "acme.retention"
+    });
+}
+```
+
+- Keys are 1–100 lowercase letters, digits, `.`, `-` or `_`. Use your own namespace.
+- A key is registered once: a second registration throws `DuplicateMetric` instead of replacing the first.
+- Resolving an unknown key throws `UnknownMetric`; it never answers zero.
+- Metrics are trusted code registered at boot. Nothing — no class name, formula or SQL — is ever loaded from the database.
+
+**Network metrics are intentionally not implemented yet.** Genealogy paths describe the current structure, not who was below whom at a past moment, so a historical team or downline figure cannot be computed honestly until that is designed. Qualification, rank and commission are not implemented either.
 
 ## Configuration
 
@@ -321,7 +365,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: network volume totals and metrics, running-balance projections, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: temporal genealogy, network metrics, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 

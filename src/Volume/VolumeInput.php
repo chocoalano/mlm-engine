@@ -6,7 +6,9 @@ namespace PandaBear\Mlm\Volume;
 
 use Carbon\CarbonImmutable;
 use DateTimeInterface;
+use InvalidArgumentException;
 use PandaBear\Mlm\Exceptions\InvalidVolumeEntry;
+use PandaBear\Mlm\Models\VolumeEntry;
 
 /**
  * @internal
@@ -37,6 +39,22 @@ final class VolumeInput
     }
 
     /**
+     * A quantity one volume entry can store: at most
+     * `VolumeEntry::MAX_INTEGER_DIGITS` integer digits, so its count of
+     * millionths fits the 64-bit column. Refused rather than truncated.
+     */
+    public static function storable(Quantity $quantity): Quantity
+    {
+        $digits = strlen(ltrim($quantity->toMillionths(), '-'));
+
+        if ($digits > VolumeEntry::MAX_INTEGER_DIGITS + Quantity::SCALE) {
+            throw InvalidVolumeEntry::tooLargeForEntry($quantity);
+        }
+
+        return $quantity;
+    }
+
+    /**
      * Free text supplied by another system — a source id, an idempotency
      * key: non-empty, no surrounding whitespace, no control characters. An
      * integer becomes its string form.
@@ -53,6 +71,29 @@ final class VolumeInput
         }
 
         return $value;
+    }
+
+    /**
+     * An effective range `[from, until)` as normalised moments, either bound
+     * open. With both bounds, `from` must come before `until`: an empty or
+     * inverted range is a mistake, not a range with no volume in it.
+     *
+     * @return array{0: CarbonImmutable|null, 1: CarbonImmutable|null}
+     */
+    public static function range(?DateTimeInterface $from, ?DateTimeInterface $until): array
+    {
+        $from = $from === null ? null : self::moment($from);
+        $until = $until === null ? null : self::moment($until);
+
+        if ($from !== null && $until !== null && $from->greaterThanOrEqualTo($until)) {
+            throw new InvalidArgumentException(sprintf(
+                'An effective range must start before it ends; [%s, %s) is empty.',
+                $from->toDateTimeString(),
+                $until->toDateTimeString(),
+            ));
+        }
+
+        return [$from, $until];
     }
 
     /**

@@ -7,6 +7,8 @@ namespace PandaBear\Mlm;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use PandaBear\Mlm\Metrics\MemberVolumeMetric;
+use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Support\PandaMlmConfig;
 
 final class PandaMlmServiceProvider extends ServiceProvider
@@ -21,6 +23,16 @@ final class PandaMlmServiceProvider extends ServiceProvider
             PandaMlmConfig::class,
             static fn (Application $app): PandaMlmConfig => PandaMlmConfig::fromConfig($app->make(Repository::class)),
         );
+
+        // Shared: registrations are application configuration, made once at
+        // boot, and resolving a metric never changes them. The built-ins go
+        // through the same register() any application uses.
+        $this->app->singleton(MetricRegistry::class, static function (Application $app): MetricRegistry {
+            $registry = new MetricRegistry;
+            $registry->register($app->make(MemberVolumeMetric::class));
+
+            return $registry;
+        });
     }
 
     public function boot(): void

@@ -39,6 +39,13 @@ use PandaBear\Mlm\Volume\Quantity;
  */
 final class VolumeEntry extends MlmModel
 {
+    /**
+     * Integer digits one entry's quantity may have: up to
+     * 999,999,999,999.999999, whose 18-digit count of millionths always fits
+     * the signed 64-bit `quantity_millionths` column. A total may be larger.
+     */
+    public const MAX_INTEGER_DIGITS = 12;
+
     protected $table = 'mlm_volume_entries';
 
     /**
