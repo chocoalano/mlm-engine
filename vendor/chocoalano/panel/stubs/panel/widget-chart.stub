@@ -1,0 +1,37 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Widgets;
+
+use PandaPanel\Widgets\ChartWidget;
+use PandaPanel\Widgets\Support\ChartSeries;
+
+final class {{ class }} extends ChartWidget
+{
+    protected static int $sort = 0;
+
+    /**
+     * Set to true when the query is slow enough that the dashboard should
+     * paint before it finishes.
+     */
+    protected static bool $lazy = false;
+
+    protected static string $variant = 'bar';
+
+    /**
+     * @return list<string>
+     */
+    public function labels(): array
+    {
+        return [];
+    }
+
+    /**
+     * @return list<ChartSeries>
+     */
+    public function series(): array
+    {
+        return [];
+    }
+}

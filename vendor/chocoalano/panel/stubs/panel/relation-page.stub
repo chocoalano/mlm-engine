@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }}\Pages;
+
+use App\Panels\{{ panel }}\Resources\{{ plural }}\RelationManagers\{{ class }}RelationManager;
+use App\Panels\{{ panel }}\Resources\{{ plural }}\{{ resource }};
+use PandaPanel\Resources\Pages\ManageRelatedRecords;
+
+/**
+ * The `{{ relationship }}` relation on a page of its own.
+ *
+ * Register it in `{{ resource }}::pages()` under the relation's key:
+ *
+ *     '{{ relationship }}' => Manage{{ plural }}{{ class }}::class,
+ *
+ * It routes to `{record}/{{ relationship }}` and joins the record's
+ * sub-navigation automatically.
+ */
+final class Manage{{ plural }}{{ class }} extends ManageRelatedRecords
+{
+    protected static string $resource = {{ resource }}::class;
+
+    protected static string $relationManager = {{ class }}RelationManager::class;
+}

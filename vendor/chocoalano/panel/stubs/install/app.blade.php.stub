@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="{{ str_replace('_', '-', app()->getLocale()) }}">
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        {{-- Before any stylesheet, so a reader who chose dark never sees a
+             frame of light. `appearance` is the key the panel's own settings
+             page writes — see resources/js/composables/useAppearance.ts. --}}
+        <script>
+            (function () {
+                const appearance = localStorage.getItem('appearance') ?? 'system';
+                const dark = appearance === 'dark'
+                    || (appearance === 'system'
+                        && window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+                document.documentElement.classList.toggle('dark', dark);
+            })();
+        </script>
+
+        <title inertia>{{ config('app.name', 'Laravel') }}</title>
+
+        <link rel="preconnect" href="https://fonts.bunny.net">
+        <link href="https://fonts.bunny.net/css?family=instrument-sans:400,500,600" rel="stylesheet">
+
+        @vite(['resources/css/app.css', 'resources/js/app.ts'])
+        @inertiaHead
+    </head>
+    <body class="font-sans antialiased">
+        @inertia
+    </body>
+</html>

@@ -1,0 +1,22 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Widgets;
+
+use PandaPanel\Widgets\CustomWidget;
+
+final class {{ class }} extends CustomWidget
+{
+    protected static int $sort = 0;
+
+    protected static string $component = '{{ component }}';
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function data(): array
+    {
+        return [];
+    }
+}

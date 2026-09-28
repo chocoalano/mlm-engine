@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }}\RelationManagers;
+
+{{ imports }}
+
+/**
+ * The `{{ relationship }}` relation of {{ plural }}.
+ *
+ * `query()` is the scope: every read and every write goes through the owner's
+ * relation, so a record belonging to another owner is simply not reachable
+ * here. Name this manager in `{{ resource }}::relationManagers()` — a
+ * manager the resource does not declare cannot be addressed by a request.
+ */
+final class {{ class }}RelationManager extends RelationManager
+{
+    protected static string $relationship = '{{ relationship }}';
+
+    protected static ?string $recordTitleAttribute = 'name';
+
+    public static function table(TableSchema $table, Model $owner): TableSchema
+    {
+        return $table
+            ->columns([
+                TextColumn::make('id')
+                    ->label('ID')
+                    ->sortable()
+                    ->toggleable(false),
+            ])
+            ->filters([
+{{ filters }}
+            ])
+            ->recordActions([
+{{ recordActions }}
+            ])
+            ->bulkActions([
+{{ bulkActions }}
+            ])
+            ->emptyState(
+                heading: 'Nothing here yet',
+                description: 'Related records will appear here once there are some.',
+            );
+    }
+
+    public static function form(FormSchema $schema, Model $owner): FormSchema
+    {
+        return $schema->schema([
+            //
+        ]);
+    }{{ pivotForm }}
+}

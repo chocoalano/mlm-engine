@@ -1,0 +1,27 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }}\Forms;
+
+use PandaPanel\Forms\Components\TextInput;
+use PandaPanel\Forms\FormSchema;
+use PandaPanel\Forms\Layouts\Section;
+
+final class {{ class }}Form
+{
+    public static function configure(FormSchema $schema): FormSchema
+    {
+        return $schema
+            ->columns(2)
+            ->schema([
+                Section::make('Details')
+                    ->columns(2)
+                    ->schema([
+                        TextInput::make('name')
+                            ->required()
+                            ->maxLength(255),
+                    ]),
+            ]);
+    }
+}

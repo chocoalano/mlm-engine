@@ -1,0 +1,39 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }}\Tables;
+
+{{ imports }}
+
+final class {{ plural }}Table
+{
+    public static function configure(TableSchema $table): TableSchema
+    {
+        return $table
+            ->columns([
+                TextColumn::make('id')
+                    ->label('ID')
+                    ->sortable()
+                    ->toggleable(false),
+
+                DateTimeColumn::make('created_at')
+                    ->label('Created')
+                    ->sortable(),
+            ])
+            ->filters([
+{{ filters }}
+            ])
+            ->recordActions([
+{{ recordActions }}
+            ])
+            ->bulkActions([
+{{ bulkActions }}
+            ])
+            ->defaultSort('created_at', SortDirection::Descending)
+            ->emptyState(
+                heading: 'No records yet',
+                description: 'Records will appear here once they exist.',
+            );
+    }
+}

@@ -1,0 +1,13 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }}\Pages;
+
+use App\Panels\{{ panel }}\Resources\{{ plural }}\{{ class }}Resource;
+use PandaPanel\Resources\Pages\{{ base }};
+
+final class {{ pageClass }} extends {{ base }}
+{
+    protected static string $resource = {{ class }}Resource::class;
+}

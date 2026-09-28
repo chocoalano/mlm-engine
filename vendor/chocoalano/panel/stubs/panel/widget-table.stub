@@ -1,0 +1,33 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Widgets;
+
+use Illuminate\Support\Collection;
+use PandaPanel\Tables\Columns\TextColumn;
+use PandaPanel\Tables\TableSchema;
+use PandaPanel\Widgets\TableWidget;
+
+final class {{ class }} extends TableWidget
+{
+    protected static int $sort = 0;
+
+    public function table(TableSchema $table): TableSchema
+    {
+        return $table->columns([
+            TextColumn::make('id')->label('ID'),
+        ]);
+    }
+
+    /**
+     * Keep this bounded and select only the displayed columns: a widget is a
+     * summary, not an index.
+     *
+     * @return Collection<int, covariant \Illuminate\Database\Eloquent\Model>
+     */
+    public function rows(): Collection
+    {
+        return new Collection;
+    }
+}

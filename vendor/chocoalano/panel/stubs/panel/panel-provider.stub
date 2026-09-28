@@ -1,0 +1,23 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }};
+
+use PandaPanel\Core\Panel;
+use PandaPanel\Core\PanelProvider;
+
+final class {{ panel }}PanelProvider extends PanelProvider
+{
+    public function panel(Panel $panel): Panel
+    {
+        return $panel
+            ->path('{{ path }}')
+            ->name('{{ panel }}')
+            ->icon('layout-grid')
+            ->auth()
+            ->discoverResources(app_path('Panels/{{ panel }}/Resources'))
+            ->discoverPages(app_path('Panels/{{ panel }}/Pages'))
+            ->discoverWidgets(app_path('Panels/{{ panel }}/Widgets'));
+    }
+}

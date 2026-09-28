@@ -1,0 +1,36 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Resources\{{ plural }};
+
+{{ imports }}
+
+final class {{ class }}Resource extends Resource
+{
+    protected static string $model = {{ modelBasename }}::class;
+
+    protected static ?string $navigationIcon = 'folder';
+
+    protected static int $navigationSort = 0;
+{{ softDeletes }}
+    public static function table(TableSchema $table): TableSchema
+    {
+        return {{ plural }}Table::configure($table);
+    }
+
+    public static function form(FormSchema $schema): FormSchema
+    {
+        return {{ class }}Form::configure($schema);
+    }
+
+    /**
+     * @return array<string, class-string>
+     */
+    public static function pages(): array
+    {
+        return [
+{{ pageEntries }}
+        ];
+    }
+}

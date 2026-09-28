@@ -1,0 +1,26 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Widgets;
+
+use PandaPanel\Widgets\StatsWidget;
+use PandaPanel\Widgets\Support\Stat;
+
+final class {{ class }} extends StatsWidget
+{
+    protected static int $sort = 0;
+
+    /**
+     * Use aggregates. Hydrating a collection to count it is how a dashboard
+     * becomes the slowest page in the application.
+     *
+     * @return list<Stat>
+     */
+    public function stats(): array
+    {
+        return [
+            Stat::make('Example', 0),
+        ];
+    }
+}

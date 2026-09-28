@@ -1,0 +1,46 @@
+{
+    "name": "pandabear/mlm",
+    "description": "Configurable MLM engine plugin for Panda Panel.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "chocoalano",
+            "email": "alangentina95@gmail.com"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "chocoalano/panel": "^0.5.7",
+        "illuminate/support": "^12.0|^13.0"
+    },
+    "require-dev": {
+        "laravel/pint": "^1.18",
+        "orchestra/testbench": "^10.0|^11.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PandaBear\\Mlm\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PandaBear\\Mlm\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "@php vendor/bin/phpunit"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "PandaBear\\Mlm\\PandaMlmServiceProvider"
+            ]
+        }
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

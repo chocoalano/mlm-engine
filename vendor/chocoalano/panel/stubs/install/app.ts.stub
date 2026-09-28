@@ -1,0 +1,35 @@
+import '../css/app.css';
+
+import { createInertiaApp } from '@inertiajs/vue3';
+import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
+import type { DefineComponent } from 'vue';
+import { createApp, h } from 'vue';
+
+const appName = import.meta.env.VITE_APP_NAME ?? 'Laravel';
+
+createInertiaApp({
+    title: (title) => (title ? `${title} - ${appName}` : appName),
+    resolve: (name) =>
+        resolvePageComponent(
+            `./pages/${name}.vue`,
+            import.meta.glob<DefineComponent>('./pages/**/*.vue'),
+        ),
+    setup({ el, App, props, plugin }) {
+        createApp({ render: () => h(App, props) })
+            .use(plugin)
+            .mount(el);
+    },
+    progress: { color: '#4b5563' },
+});
+
+/*
+ * Deliberately no `page.default.layout = …` here.
+ *
+ * Every panel page names the layout it wants, and an unconditional assignment
+ * in this file replaces it after the fact — which renders the panel inside
+ * your application's shell, with your sidebar instead of the panel navigation,
+ * on an HTTP 200 with no error to say so. If you add a default layout for your
+ * own pages, make it fall back rather than overwrite:
+ *
+ *     page.default.layout ??= AppLayout;
+ */

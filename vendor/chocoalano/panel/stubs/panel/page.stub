@@ -1,0 +1,24 @@
+<?php
+
+declare(strict_types=1);
+
+namespace App\Panels\{{ panel }}\Pages;
+
+use PandaPanel\Pages\Page;
+
+final class {{ class }} extends Page
+{
+    protected static ?string $navigationIcon = 'file-text';
+
+    protected static int $navigationSort = 0;
+
+    protected static string $component = '{{ component }}';
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function props(): array
+    {
+        return [];
+    }
+}

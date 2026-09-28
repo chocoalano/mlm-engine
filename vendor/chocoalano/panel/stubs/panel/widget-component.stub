@@ -1,0 +1,11 @@
+<script setup lang="ts">
+defineProps<{
+    // Mirror whatever the PHP widget's data() returns.
+}>();
+</script>
+
+<template>
+    <div class="flex h-full flex-col gap-3 rounded-lg border p-4">
+        <h3 class="text-sm font-medium">{{ label }}</h3>
+    </div>
+</template>

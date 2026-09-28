@@ -1,0 +1,8 @@
+/*
+ * The panel's stylesheet, which pulls in Tailwind and the whole design token
+ * set — see resources/css/panda-panel.css, which is yours to edit.
+ */
+@import './panda-panel.css';
+
+@source '../views';
+@source '../js';
