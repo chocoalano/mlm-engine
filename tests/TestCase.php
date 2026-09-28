@@ -26,6 +26,23 @@ abstract class TestCase extends Orchestra
     }
 
     /**
+     * A fresh in-memory SQLite database per test, with foreign keys enforced
+     * so the schema's constraints are exercised rather than assumed.
+     */
+    protected function defineEnvironment($app): void
+    {
+        $config = $app->make('config');
+
+        $config->set('database.default', 'testing');
+        $config->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+            'foreign_key_constraints' => true,
+        ]);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     protected function composerJson(): array
