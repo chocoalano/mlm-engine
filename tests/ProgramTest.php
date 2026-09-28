@@ -97,9 +97,11 @@ final class ProgramTest extends DatabaseTestCase
 
     public function test_it_uses_the_default_connection_when_none_is_configured(): void
     {
+        $this->app->make('config')->set('mlm.database.connection', null);
+
         $program = Program::factory()->create();
 
         $this->assertNull((new Program)->getConnectionName());
-        $this->assertSame('testing', $program->getConnection()->getName());
+        $this->assertSame($this->app->make('config')->get('database.default'), $program->getConnection()->getName());
     }
 }

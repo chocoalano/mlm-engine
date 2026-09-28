@@ -112,8 +112,10 @@ final class VolumeReversalTest extends DatabaseTestCase
 
         // Race simulation: once the recorder has checked that the entry is
         // not yet reversed, "another process" reverses it under its own key.
+        // The only select that mentions reversal_of_id is that check; the
+        // column is matched without its quotes, which differ by database.
         DB::listen(static function (QueryExecuted $query) use (&$competed, $original): void {
-            if ($competed || ! str_starts_with($query->sql, 'select') || ! str_contains($query->sql, '"reversal_of_id" = ?')) {
+            if ($competed || ! str_starts_with($query->sql, 'select') || ! str_contains($query->sql, 'reversal_of_id')) {
                 return;
             }
 

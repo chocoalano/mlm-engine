@@ -374,7 +374,37 @@ composer test
 vendor/bin/pint --test config src tests database
 ```
 
-The suite runs the package migrations against an in-memory SQLite database.
+By default the suite runs the package migrations against an in-memory SQLite database. It needs nothing else.
+
+### Against MySQL or PostgreSQL
+
+The same suite runs against a real MySQL or PostgreSQL database when you opt in. Every test starts by dropping every table in that database, so give it an empty database made for the purpose: its name must contain `test`, and the suite refuses any other. The suite never creates or drops the database itself.
+
+Connection details come from the environment only, never from a committed file:
+
+| Variable | Required | Default |
+| --- | --- | --- |
+| `MLM_TEST_MYSQL_DATABASE`, `MLM_TEST_PGSQL_DATABASE` | yes | |
+| `MLM_TEST_MYSQL_USERNAME`, `MLM_TEST_PGSQL_USERNAME` | yes | |
+| `MLM_TEST_MYSQL_PASSWORD`, `MLM_TEST_PGSQL_PASSWORD` | no | empty |
+| `MLM_TEST_MYSQL_HOST`, `MLM_TEST_PGSQL_HOST` | no | `127.0.0.1` |
+| `MLM_TEST_MYSQL_PORT`, `MLM_TEST_PGSQL_PORT` | no | `3306`, `5432` |
+
+```bash
+export MLM_TEST_MYSQL_DATABASE=mlm_engine_test MLM_TEST_MYSQL_USERNAME=mlm
+composer test:mysql
+
+export MLM_TEST_PGSQL_DATABASE=mlm_engine_test MLM_TEST_PGSQL_USERNAME=mlm
+composer test:pgsql
+```
+
+`composer test:mysql` and `composer test:pgsql` set `MLM_TEST_DATABASE` to `mysql` or `pgsql` for you. The database user needs to create and drop tables there. On MySQL the concurrency tests also read `performance_schema.data_lock_waits` and `performance_schema.threads` to see which sessions are waiting on a lock.
+
+Tests in the `concurrency` group run package operations in separate PHP processes, each with its own database session, and check how they interleave: racing cycle checks, sponsor against placement writes, and racing volume records and reversals. They are skipped on SQLite. To run only them:
+
+```bash
+composer test:mysql -- --group concurrency
+```
 
 ## License
 

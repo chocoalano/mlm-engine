@@ -58,6 +58,27 @@ final class VolumeTotalsTest extends DatabaseTestCase
         $this->assertSame('1000', $this->totals()->forMember($otherProgram, 'sales')->value());
     }
 
+    public function test_a_total_beyond_a_64_bit_count_of_millionths_is_exact(): void
+    {
+        if ($this->app->make('db')->connection()->getDriverName() === 'sqlite') {
+            $this->markTestSkipped('SQLite overflows SUM past 64 bits (ADR-010); MySQL and PostgreSQL widen it.');
+        }
+
+        $member = Member::factory()->create();
+
+        // Ten of the largest single entries: 9,999,999,999,999.99999 in all,
+        // a count of millionths above PHP_INT_MAX.
+        foreach (range(1, 10) as $index) {
+            $this->record($member, '999999999999.999999', "large-{$index}");
+        }
+
+        $total = $this->totals()->forMember($member, 'sales');
+
+        $this->assertSame('9999999999999.99999', $total->value());
+        $this->assertSame('9999999999999999990', $total->toMillionths());
+        $this->assertGreaterThan(0, strcmp($total->toMillionths(), (string) PHP_INT_MAX));
+    }
+
     public function test_a_member_without_entries_totals_zero(): void
     {
         $this->assertSame('0', $this->totals()->forMember(Member::factory()->create(), 'sales')->value());
