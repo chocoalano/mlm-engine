@@ -11,21 +11,24 @@ use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
+use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
+use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 
 /**
  * `mlm.database.connection` names a connection other than the default, and
- * the migrations, the models, the plan lifecycle and both genealogies all
- * follow it.
+ * the migrations, the models, the plan lifecycle, both genealogies and the
+ * volume history all follow it.
  */
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
     use BuildsGenealogies;
+    use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class];
 
     protected function defineEnvironment($app): void
     {
@@ -103,6 +106,19 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(['Bob@1', 'Alice@2'], $this->relatives($this->placement()->ancestors($members['Charlie'])));
         $this->assertTrue($this->placement()->directParent($members['Bob'])?->is($members['Alice']));
         $this->assertSame(['Charlie'], $this->placement()->directChildren($members['Bob'])->pluck('member_code')->all());
+    }
+
+    public function test_volume_is_recorded_reversed_and_totalled_on_the_configured_connection(): void
+    {
+        ['Alice' => $alice] = $this->members(Program::factory()->create(), 'Alice');
+
+        $entry = $this->record($alice, '20', 'order:ORD-1');
+        $this->record($alice, '5', 'order:ORD-2');
+        $this->reverse($entry, 'refund:RF-1');
+
+        $this->assertCount(3, $this->volumeRows('mlm'));
+        $this->assertSame('5', $this->totals()->forMember($alice, 'sales')->value());
+        $this->assertTrue($this->record($alice, '20', 'order:ORD-1')->is($entry));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 final class MigrationTest extends TestCase
 {
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -84,6 +84,42 @@ final class MigrationTest extends TestCase
         );
     }
 
+    public function test_the_volume_entries_table_has_exactly_the_minimum_columns(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            [
+                'id', 'program_id', 'member_id', 'type', 'quantity_millionths',
+                'source_type', 'source_id', 'idempotency_key', 'effective_at', 'reversal_of_id',
+                'created_at', 'updated_at',
+            ],
+            Schema::getColumnListing('mlm_volume_entries'),
+        );
+    }
+
+    public function test_volume_quantities_are_stored_as_whole_millionths(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $quantity = collect(Schema::getColumns('mlm_volume_entries'))->firstWhere('name', 'quantity_millionths');
+
+        $this->assertIsArray($quantity);
+        $this->assertStringContainsStringIgnoringCase('int', $quantity['type_name']);
+        $this->assertFalse($quantity['nullable']);
+    }
+
+    public function test_the_volume_indexes_serve_replays_reversals_and_member_totals(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            [['program_id', 'idempotency_key'], ['reversal_of_id']],
+            $this->uniqueIndexColumns('mlm_volume_entries'),
+        );
+        $this->assertContains(['member_id', 'type', 'effective_at'], collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all());
+    }
+
     public function test_the_genealogy_paths_table_has_exactly_the_minimum_columns(): void
     {
         $this->artisan('migrate')->assertSuccessful();
@@ -152,6 +188,9 @@ final class MigrationTest extends TestCase
             'a path names its descendant' => ['mlm_genealogy_paths', 'descendant_id', 'mlm_members'],
             'a placement edge names its member' => ['mlm_placement_edges', 'member_id', 'mlm_members'],
             'a placement edge names its parent' => ['mlm_placement_edges', 'parent_id', 'mlm_members'],
+            'a volume entry belongs to a program' => ['mlm_volume_entries', 'program_id', 'mlm_programs'],
+            'a volume entry belongs to a member' => ['mlm_volume_entries', 'member_id', 'mlm_members'],
+            'a reversal names the entry it reverses' => ['mlm_volume_entries', 'reversal_of_id', 'mlm_volume_entries'],
         ];
     }
 
