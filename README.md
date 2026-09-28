@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and a metrics foundation — a registry, an engine and the built-in `member.volume` metric. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Network metrics, plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -341,6 +341,27 @@ $value->value();                  // "1250.5" — an exact string, never a float
 
 The member's own net volume of one type — reversals included — over the optional range. It requires the `type` parameter and refuses any other parameter. It never looks at the member's genealogy.
 
+### Built-in: `sponsor.network.volume` and `placement.network.volume`
+
+The net volume of one type recorded by the members **below** the member — in the sponsor tree or in the placement tree — over the optional range. The member's own volume is not included; that is `member.volume`. The two networks are independent: sponsoring someone adds nothing to your placement network.
+
+```php
+app(MetricEngine::class)->resolve('sponsor.network.volume', new MetricContext(
+    member: $alice,
+    parameters: ['type' => 'sales', 'max_depth' => 3],   // max_depth is optional
+    from: $june1,
+    until: $july1,
+));
+```
+
+- `type` is required, as for `member.volume`. `max_depth`, an integer of 1 or more, counts only members at most that many steps down; without it, everyone below counts. No other parameter is accepted.
+- **Network volume uses the genealogy that applied when the original activity happened.** An entry counts for Alice only if its member was already below Alice at the entry's `effective_at`. If Charlie sells in January and Alice sponsors Charlie in March, Alice's network never receives that January sale — not even when asked in April.
+- **A reversal follows the activity it reverses.** It reaches exactly the uplines the original sale reached, and appears in the period of its own `effective_at`. If Bob sponsored Charlie before his January sale, Alice joined above Bob in March, and the sale is refunded in April, Bob's network shows +100 in January and −100 in April; Alice's shows neither.
+- The range `[from, until)` selects entries by their own `effective_at`, as everywhere else.
+- Computed on demand, exactly, in one query; nothing is stored.
+
+These are generic graph figures, not a compensation plan: there are no generations, legs, sides, slots or pairing.
+
 ### Your own metrics
 
 Implement `PandaBear\Mlm\Metrics\Metric` and register it from a service provider:
@@ -361,7 +382,7 @@ public function register(): void
 - Resolving an unknown key throws `UnknownMetric`; it never answers zero.
 - Metrics are trusted code registered at boot. Nothing — no class name, formula or SQL — is ever loaded from the database.
 
-**Network metrics are intentionally not implemented yet.** Genealogy paths describe the current structure, not who was below whom at a past moment, so a historical team or downline figure cannot be computed honestly until that is designed. Qualification, rank and commission are not implemented either.
+Metrics only answer "what is the value". Qualification, rank and commission are not implemented.
 
 ## Configuration
 
@@ -381,7 +402,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: network metrics, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 

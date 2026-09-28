@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Metrics;
 
 use PandaBear\Mlm\Exceptions\InvalidMetricParameters;
-use PandaBear\Mlm\Exceptions\InvalidVolumeEntry;
-use PandaBear\Mlm\Volume\VolumeInput;
 use PandaBear\Mlm\Volume\VolumeTotals;
 
 /**
@@ -28,29 +26,13 @@ final readonly class MemberVolumeMetric implements Metric
         return self::KEY;
     }
 
+    /**
+     * @throws InvalidMetricParameters
+     */
     public function resolve(MetricContext $context): MetricValue
     {
-        $unknown = array_values(array_diff(array_keys($context->parameters), self::PARAMETERS));
-
-        if ($unknown !== []) {
-            throw InvalidMetricParameters::unknown(self::KEY, $unknown, self::PARAMETERS);
-        }
-
-        if (! array_key_exists('type', $context->parameters)) {
-            throw InvalidMetricParameters::missing(self::KEY, 'type');
-        }
-
-        $type = $context->parameters['type'];
-
-        if (! is_string($type)) {
-            throw InvalidMetricParameters::invalid(self::KEY, 'type', 'a volume type is a string, '.get_debug_type($type).' given.');
-        }
-
-        try {
-            VolumeInput::identifier('type', $type);
-        } catch (InvalidVolumeEntry $exception) {
-            throw InvalidMetricParameters::invalid(self::KEY, 'type', $exception->getMessage());
-        }
+        MetricParameters::refuseUnknown(self::KEY, $context->parameters, self::PARAMETERS);
+        $type = MetricParameters::volumeType(self::KEY, $context->parameters);
 
         return MetricValue::fromQuantity(
             $this->totals->forMember($context->member, $type, $context->from, $context->until),

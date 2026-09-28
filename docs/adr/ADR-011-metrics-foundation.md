@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.1.
+Accepted — Phase 2.1. The network metrics it deferred were added in Phase 2.3, on temporal genealogy: see ADR-012 and ADR-013.
 
 ## Context
 

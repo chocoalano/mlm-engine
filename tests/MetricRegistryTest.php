@@ -11,6 +11,8 @@ use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Metrics\MetricRegistry;
+use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
+use PandaBear\Mlm\Metrics\SponsorNetworkVolumeMetric;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Tests\Fixtures\ExampleMetricServiceProvider;
 use PandaBear\Mlm\Tests\Fixtures\FixedMetric;
@@ -18,12 +20,14 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 final class MetricRegistryTest extends TestCase
 {
-    public function test_the_package_registers_member_volume_as_a_built_in(): void
+    public function test_the_package_registers_its_built_ins(): void
     {
         $registry = $this->app->make(MetricRegistry::class);
 
-        $this->assertSame(['member.volume'], $registry->keys());
+        $this->assertSame(['member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
         $this->assertInstanceOf(MemberVolumeMetric::class, $registry->get('member.volume'));
+        $this->assertInstanceOf(SponsorNetworkVolumeMetric::class, $registry->get('sponsor.network.volume'));
+        $this->assertInstanceOf(PlacementNetworkVolumeMetric::class, $registry->get('placement.network.volume'));
     }
 
     public function test_the_registry_is_one_instance_for_the_application(): void
@@ -57,17 +61,30 @@ final class MetricRegistryTest extends TestCase
         }
     }
 
-    public function test_the_built_in_key_cannot_be_claimed_again(): void
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function builtInKeys(): array
+    {
+        return [
+            'member.volume' => ['member.volume'],
+            'sponsor.network.volume' => ['sponsor.network.volume'],
+            'placement.network.volume' => ['placement.network.volume'],
+        ];
+    }
+
+    #[DataProvider('builtInKeys')]
+    public function test_a_built_in_key_cannot_be_claimed_again(string $key): void
     {
         $this->expectException(DuplicateMetric::class);
 
-        $this->app->make(MetricRegistry::class)->register(new FixedMetric('member.volume'));
+        $this->app->make(MetricRegistry::class)->register(new FixedMetric($key));
     }
 
     public function test_an_unknown_key_is_refused_rather_than_resolved_as_zero(): void
     {
         $this->expectException(UnknownMetric::class);
-        $this->expectExceptionMessage('No metric is registered under "does.not.exist". Registered: member.volume.');
+        $this->expectExceptionMessage('No metric is registered under "does.not.exist". Registered: member.volume, placement.network.volume, sponsor.network.volume.');
 
         $this->app->make(MetricEngine::class)->resolve('does.not.exist', new MetricContext(new Member));
     }
@@ -128,6 +145,6 @@ final class MetricRegistryTest extends TestCase
 
         $this->app->register(ExampleMetricServiceProvider::class);
 
-        $this->assertSame(['custom.example', 'member.volume'], $registry->keys());
+        $this->assertSame(['custom.example', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
     }
 }

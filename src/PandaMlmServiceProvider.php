@@ -9,6 +9,8 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
+use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
+use PandaBear\Mlm\Metrics\SponsorNetworkVolumeMetric;
 use PandaBear\Mlm\Support\PandaMlmConfig;
 
 final class PandaMlmServiceProvider extends ServiceProvider
@@ -30,6 +32,8 @@ final class PandaMlmServiceProvider extends ServiceProvider
         $this->app->singleton(MetricRegistry::class, static function (Application $app): MetricRegistry {
             $registry = new MetricRegistry;
             $registry->register($app->make(MemberVolumeMetric::class));
+            $registry->register($app->make(SponsorNetworkVolumeMetric::class));
+            $registry->register($app->make(PlacementNetworkVolumeMetric::class));
 
             return $registry;
         });

@@ -189,6 +189,9 @@ final class MigrationTest extends TestCase
         // Descendants as of a moment: a range within one ancestor.
         $this->assertContains(['tree_type', 'ancestor_id', 'effective_from', 'depth'], $paths->pluck('columns')->all());
 
+        // Descendants down to a depth: a range within one ancestor.
+        $this->assertContains(['tree_type', 'ancestor_id', 'depth'], $paths->pluck('columns')->all());
+
         // Who a sponsor sponsored directly; who is placed directly under a parent.
         $this->assertContains(['sponsor_id'], collect(Schema::getIndexes('mlm_sponsor_edges'))->pluck('columns')->all());
         $this->assertContains(['parent_id'], collect(Schema::getIndexes('mlm_placement_edges'))->pluck('columns')->all());
