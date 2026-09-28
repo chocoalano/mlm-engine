@@ -122,7 +122,7 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
             'would make a cycle',
         );
         $this->assertSame(3, DB::table('mlm_sponsor_edges')->count());
-        $this->assertTreeConsistent('sponsor', 'mlm_sponsor_edges', 'sponsor_id');
+        $this->assertTreeConsistent('sponsor', 'mlm_sponsor_edges', 'sponsor_id', 'assigned_at');
     }
 
     public function test_concurrent_placements_cannot_close_a_cycle(): void
@@ -144,7 +144,7 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
             'would make a cycle',
         );
         $this->assertSame(3, DB::table('mlm_placement_edges')->count());
-        $this->assertTreeConsistent('placement', 'mlm_placement_edges', 'parent_id');
+        $this->assertTreeConsistent('placement', 'mlm_placement_edges', 'parent_id', 'placed_at');
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -527,32 +527,42 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
     /**
      * Recomputes the whole closure from the direct edges and compares it
-     * with what is stored — and fails on any cycle.
+     * with what is stored — and fails on any cycle. Every path must also
+     * carry its moment: the latest edge on its chain, or for a self path the
+     * member's first edge.
      */
-    private function assertTreeConsistent(string $tree, string $edges, string $parentColumn): void
+    private function assertTreeConsistent(string $tree, string $edges, string $parentColumn, string $atColumn): void
     {
         /** @var array<string, string> $parents */
         $parents = DB::table($edges)->pluck($parentColumn, 'member_id')->all();
+        /** @var array<string, string> $at */
+        $at = DB::table($edges)->pluck($atColumn, 'member_id')->map(static fn (mixed $moment): string => (string) $moment)->all();
         $expected = [];
 
         foreach (array_unique([...array_keys($parents), ...array_values($parents)]) as $member) {
-            $expected[] = "{$member}>{$member}@0";
+            $first = min(array_filter([$at[$member] ?? null, ...array_map(
+                static fn (string $child): string => $at[$child],
+                array_keys($parents, $member, true),
+            )]));
+            $expected[] = "{$member}>{$member}@0 from {$first}";
             $seen = [$member => true];
             $current = $member;
             $depth = 0;
+            $latest = '';
 
             while (isset($parents[$current])) {
+                $latest = max($latest, $at[$current]);
                 $current = $parents[$current];
                 $depth++;
 
                 $this->assertArrayNotHasKey($current, $seen, "The {$tree} tree has a cycle through {$current}.");
                 $seen[$current] = true;
-                $expected[] = "{$current}>{$member}@{$depth}";
+                $expected[] = "{$current}>{$member}@{$depth} from {$latest}";
             }
         }
 
         $stored = DB::table('mlm_genealogy_paths')->where('tree_type', $tree)->get()
-            ->map(static fn (object $path): string => "{$path->ancestor_id}>{$path->descendant_id}@{$path->depth}")
+            ->map(static fn (object $path): string => "{$path->ancestor_id}>{$path->descendant_id}@{$path->depth} from {$path->effective_from}")
             ->all();
 
         sort($expected);

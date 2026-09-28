@@ -141,9 +141,22 @@ final class MigrationTest extends TestCase
         $this->artisan('migrate')->assertSuccessful();
 
         $this->assertEqualsCanonicalizing(
-            ['tree_type', 'ancestor_id', 'descendant_id', 'depth'],
+            ['tree_type', 'ancestor_id', 'descendant_id', 'depth', 'effective_from'],
             Schema::getColumnListing('mlm_genealogy_paths'),
         );
+    }
+
+    public function test_every_genealogy_path_records_when_it_took_effect(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $column = collect(Schema::getColumns('mlm_genealogy_paths'))->firstWhere('name', 'effective_from');
+
+        $this->assertIsArray($column);
+        $this->assertFalse($column['nullable']);
+
+        // The upgrade's scratch table never outlives the migration.
+        $this->assertFalse(Schema::hasTable('mlm_genealogy_paths_replay_000009'));
     }
 
     public function test_the_unique_indexes_scope_identities_to_their_owner(): void
@@ -172,6 +185,9 @@ final class MigrationTest extends TestCase
 
         // The reverse direction, for ancestors.
         $this->assertContains(['tree_type', 'descendant_id', 'depth'], $paths->pluck('columns')->all());
+
+        // Descendants as of a moment: a range within one ancestor.
+        $this->assertContains(['tree_type', 'ancestor_id', 'effective_from', 'depth'], $paths->pluck('columns')->all());
 
         // Who a sponsor sponsored directly; who is placed directly under a parent.
         $this->assertContains(['sponsor_id'], collect(Schema::getIndexes('mlm_sponsor_edges'))->pluck('columns')->all());

@@ -49,6 +49,7 @@ final class PlacementGenealogySchemaTest extends DatabaseTestCase
             'ancestor_id' => $members['Alice']->id,
             'descendant_id' => $members['Bob']->id,
             'depth' => 1,
+            'effective_from' => now(),
         ]);
     }
 

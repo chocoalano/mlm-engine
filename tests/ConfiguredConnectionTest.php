@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Tests;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Schema;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
@@ -53,6 +54,11 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
             $this->assertTrue(Schema::connection('mlm')->hasTable($table), "{$table} is not on [mlm].");
             $this->assertFalse(Schema::connection('testing')->hasTable($table), "{$table} is on the default connection.");
         }
+
+        // The upgrade ran there too, and left nothing behind anywhere.
+        $this->assertTrue(Schema::connection('mlm')->hasColumn('mlm_genealogy_paths', 'effective_from'));
+        $this->assertFalse(Schema::connection('mlm')->hasTable('mlm_genealogy_paths_replay_000009'));
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_genealogy_paths_replay_000009'));
     }
 
     public function test_the_models_use_the_configured_connection(): void
@@ -94,6 +100,42 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(['Bob@1', 'Alice@2'], $this->relatives($this->genealogy()->ancestors($members['Charlie'])));
         $this->assertTrue($this->genealogy()->directSponsor($members['Bob'])?->is($members['Alice']));
         $this->assertSame(['Charlie'], $this->genealogy()->directMembers($members['Bob'])->pluck('member_code')->all());
+    }
+
+    public function test_sponsor_history_is_written_and_read_on_the_configured_connection(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'Alice', 'Bob', 'Charlie');
+
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->sponsorTree($members, ['Alice' => ['Bob']]);
+        $this->travelTo(CarbonImmutable::parse('2026-03-01 00:00:00'));
+        $this->sponsorTree($members, ['Bob' => ['Charlie']]);
+
+        $this->assertSame('2026-03-01 00:00:00', $this->pathMoments('sponsor', 'mlm')['Alice > Charlie @2']);
+
+        $february = CarbonImmutable::parse('2026-02-01 00:00:00');
+        $this->assertSame(['Bob@1'], $this->relatives($this->genealogy()->descendantsAt($members['Alice'], $february)));
+        $this->assertSame([], $this->relatives($this->genealogy()->ancestorsAt($members['Charlie'], $february)));
+        $this->assertNull($this->genealogy()->directSponsorAt($members['Charlie'], $february));
+        $this->assertSame(['Bob'], $this->genealogy()->directMembersAt($members['Alice'], $february)->pluck('member_code')->all());
+    }
+
+    public function test_placement_history_is_written_and_read_on_the_configured_connection(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'Alice', 'Bob', 'Charlie');
+
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->placementTree($members, ['Alice' => ['Bob']]);
+        $this->travelTo(CarbonImmutable::parse('2026-03-01 00:00:00'));
+        $this->placementTree($members, ['Bob' => ['Charlie']]);
+
+        $this->assertSame('2026-03-01 00:00:00', $this->pathMoments('placement', 'mlm')['Alice > Charlie @2']);
+
+        $february = CarbonImmutable::parse('2026-02-01 00:00:00');
+        $this->assertSame(['Bob@1'], $this->relatives($this->placement()->descendantsAt($members['Alice'], $february)));
+        $this->assertSame([], $this->relatives($this->placement()->ancestorsAt($members['Charlie'], $february)));
+        $this->assertNull($this->placement()->directParentAt($members['Charlie'], $february));
+        $this->assertSame(['Bob'], $this->placement()->directChildrenAt($members['Alice'], $february)->pluck('member_code')->all());
     }
 
     public function test_the_placement_genealogy_writes_and_reads_on_the_configured_connection(): void
