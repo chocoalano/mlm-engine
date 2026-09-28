@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration and the core domain — programs and their members. Plans, genealogy and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development.** This package currently provides the Panda Panel plugin, the technical package configuration, the core domain — programs and their members — and plan versioning. Plan rules, genealogy and compensation are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -63,6 +63,8 @@ php artisan migrate
 | --- | --- |
 | `mlm_programs` | programs: `id`, `code`, `name` |
 | `mlm_members` | members: `id`, `program_id`, `member_code`, `external_type`, `external_id`, `joined_at` |
+| `mlm_plans` | plans: `id`, `program_id`, `code`, `name` |
+| `mlm_plan_versions` | plan versions: `id`, `plan_id`, `version`, `status`, and one timestamp per lifecycle step |
 
 Primary keys are ULIDs. The tables and the models use the connection named by `mlm.database.connection` — the application's default when it is not set.
 
@@ -111,6 +113,51 @@ $program->members()->create([
 
 Both fields are optional, but they are set together or not at all. One external identity is at most one member per program, and may be a member of several programs.
 
+## Planning
+
+### Plan
+
+A plan is the stable identity of a business plan inside a program. Its `code` is unique within the program. A plan holds no rules — everything that changes between revisions belongs to its versions.
+
+```php
+$plan = $program->plans()->create([
+    'code' => 'STANDARD',
+    'name' => 'Standard Plan',
+]);
+```
+
+### Plan versioning
+
+A plan version is one numbered revision of a plan: `1`, `2`, `3`, unique within the plan and allocated for you. Versions are created and moved only through `PandaBear\Mlm\Planning\PlanVersionLifecycle`, resolved from the container:
+
+```php
+use PandaBear\Mlm\Planning\PlanVersionLifecycle;
+
+$lifecycle = app(PlanVersionLifecycle::class);
+
+$version = $lifecycle->draft($plan);          // version 1, draft
+$lifecycle->markValidated($version);
+$lifecycle->publish($version);
+$lifecycle->activate($version);
+
+$plan->currentActiveVersion();                // version 1, or null when none is active
+```
+
+### Plan version lifecycle
+
+```text
+draft → validated → published → active → superseded → archived
+```
+
+- The lifecycle only moves forward, one step at a time. An operation out of order throws `InvalidPlanVersionTransition`.
+- Activating a newer published version supersedes the active one in the same transaction, so a plan has at most one active version. An older version can never replace a newer active one. Superseding is not a separate operation.
+- Only a superseded version can be archived.
+- Each step records its moment once: `validated_at`, `published_at`, `activated_at`, `superseded_at`, `archived_at`.
+- Only a draft is mutable. From `validated` on, a version is locked: `isMutable()` is false, `assertMutable()` throws `PlanVersionNotMutable`, and it cannot be deleted.
+- `status` cannot be mass assigned, and a status or timestamp set directly on the model is refused on save. Raw query-builder writes bypass these guards, as they bypass every Eloquent rule.
+
+Plan versions do not carry any rules yet: there is nothing to calculate with.
+
 The design decisions are recorded in [`docs/adr`](docs/adr).
 
 ## Configuration
@@ -131,7 +178,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: plans and plan versions, sponsor and placement genealogy, network types, performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: plan components, rules and parameters, sponsor and placement genealogy, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 
