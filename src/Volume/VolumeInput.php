@@ -9,6 +9,7 @@ use DateTimeInterface;
 use InvalidArgumentException;
 use PandaBear\Mlm\Exceptions\InvalidVolumeEntry;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Support\EffectiveMoment;
 
 /**
  * @internal
@@ -103,8 +104,6 @@ final class VolumeInput
      */
     public static function moment(DateTimeInterface $at): CarbonImmutable
     {
-        return CarbonImmutable::instance($at)
-            ->setTimezone(date_default_timezone_get())
-            ->startOfSecond();
+        return EffectiveMoment::of($at);
     }
 }

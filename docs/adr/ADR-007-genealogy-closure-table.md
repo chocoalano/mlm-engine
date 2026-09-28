@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 1.2. Amended in Phase 1.3 for the placement tree.
+Accepted — Phase 1.2. Amended in Phase 1.3 for the placement tree, and in Phase 2.2 for `effective_from` (ADR-012).
 
 ## Context
 
@@ -16,6 +16,7 @@ Accepted — Phase 1.2. Amended in Phase 1.3 for the placement tree.
 - **`tree_type`** is `sponsor` or `placement`, fixed by the genealogy that owns the tree and never taken from input. Both trees share the table and its indexes, which all lead with `tree_type`; every read, check and write filters on its own tree, so the same pair can have a path in each without either seeing the other's.
 - **One implementation of the mechanics.** Both genealogies go through an internal `ClosureTree` bound to their tree type: the key-ordered member lock, the program lock, self paths, the cross-product attach and the relatives read exist once. It is `@internal`, not a public abstraction — each genealogy keeps its own edges, rules, exceptions and vocabulary.
 - **Keys and indexes.** The primary key is `(tree_type, ancestor_id, descendant_id)`: one path per pair, and its prefix finds descendants. A second index on `(tree_type, descendant_id, depth)` finds ancestors nearest first. Both member columns reference `mlm_members` with restricted deletion.
+- **Moments.** Since Phase 2.2 every path also carries `effective_from`, the moment it took effect: the attaching edge's moment, or for a self path the member's first edge. The attach writes it in the same set-based insert. ADR-012 records the temporal model and a third index, `(tree_type, ancestor_id, effective_from, depth)`.
 - **The service owns the graph; the database backs local invariants.** Cycle prevention and keeping edges and paths consistent are the genealogy service's job. The database independently enforces only local rules: `UNIQUE (member_id)` refuses a second direct edge for a member, the foreign keys keep every id pointing at a member, and the primary key refuses a duplicate path. The primary key also adds a failure mode when a *correctly maintained* closure write would close a cycle — the member at the top would gain a duplicate path to itself. That is not protection against raw writes: a raw edge insert that skips the paths is accepted even when it closes a cycle, and leaves edges and paths disagreeing.
 
 ## Consequences

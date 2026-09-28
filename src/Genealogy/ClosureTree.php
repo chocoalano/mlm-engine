@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Genealogy;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\Query\Builder;
@@ -19,6 +20,11 @@ use PandaBear\Mlm\Models\Member;
  * tree needs. Not a public API and not a tree framework — each genealogy
  * keeps its own edges, rules, exceptions and vocabulary. Only the storage
  * mechanics live here, so they exist once.
+ *
+ * Every path carries `effective_from`: the moment its descendant came below
+ * its ancestor in this tree. The trees only grow — no edge is ever moved or
+ * removed — so a path holds from that moment on, and the tree at a moment T
+ * is the paths with `effective_from <= T`.
  */
 final readonly class ClosureTree
 {
@@ -88,11 +94,13 @@ final readonly class ClosureTree
     /**
      * The depth-0 path a member needs before paths can be joined through it,
      * written the first time the member takes part in this tree — never by a
-     * read, and never because it takes part in another tree.
+     * read, and never because it takes part in another tree. It takes effect
+     * at `$at`, the moment of that first write. It is structure only: no
+     * member is its own sponsor or parent.
      *
      * @param  list<string>  $memberIds
      */
-    public function ensureSelfPaths(Connection $connection, array $memberIds): void
+    public function ensureSelfPaths(Connection $connection, array $memberIds, CarbonImmutable $at): void
     {
         $existing = $this->paths($connection)
             ->whereIn('ancestor_id', $memberIds)
@@ -111,6 +119,7 @@ final readonly class ClosureTree
             'ancestor_id' => $id,
             'descendant_id' => $id,
             'depth' => 0,
+            'effective_from' => $at,
         ], $missing));
     }
 
@@ -119,11 +128,15 @@ final readonly class ClosureTree
      * of the parent (the parent included) becomes an ancestor of every member
      * of the subtree (the child included) — one set-based insert, however
      * deep the subtree.
+     *
+     * Every path it writes takes effect at `$at`, the moment of the edge that
+     * joins the two: before that edge they were not connected, however long
+     * each side had existed.
      */
-    public function attach(Connection $connection, string $parentId, string $childId): void
+    public function attach(Connection $connection, string $parentId, string $childId, CarbonImmutable $at): void
     {
         $connection->table(self::PATHS)->insertUsing(
-            ['tree_type', 'ancestor_id', 'descendant_id', 'depth'],
+            ['tree_type', 'ancestor_id', 'descendant_id', 'depth', 'effective_from'],
             $connection->table(self::PATHS.' as ancestry')
                 ->crossJoin(self::PATHS.' as subtree')
                 ->where('ancestry.tree_type', $this->type)
@@ -131,30 +144,35 @@ final readonly class ClosureTree
                 ->where('subtree.tree_type', $this->type)
                 ->where('subtree.ancestor_id', $childId)
                 ->select(['ancestry.tree_type', 'ancestry.ancestor_id', 'subtree.descendant_id'])
-                ->selectRaw('ancestry.depth + subtree.depth + 1'),
+                ->selectRaw('ancestry.depth + subtree.depth + 1')
+                ->selectRaw('?', [$at]),
         );
     }
 
     /**
+     * The tree as it stands, or, with `$at`, as it stood at that moment.
+     *
      * @return Collection<int, array{Member, int}> nearest first, the member excluded
      */
-    public function ancestors(Member $member, ?int $maxDepth): Collection
+    public function ancestors(Member $member, ?int $maxDepth, ?CarbonImmutable $at = null): Collection
     {
-        return $this->relatives($member, 'descendant_id', 'ancestor_id', $maxDepth);
+        return $this->relatives($member, 'descendant_id', 'ancestor_id', $maxDepth, $at);
     }
 
     /**
+     * The tree as it stands, or, with `$at`, as it stood at that moment.
+     *
      * @return Collection<int, array{Member, int}> nearest first, then by member key, the member excluded
      */
-    public function descendants(Member $member, ?int $maxDepth): Collection
+    public function descendants(Member $member, ?int $maxDepth, ?CarbonImmutable $at = null): Collection
     {
-        return $this->relatives($member, 'ancestor_id', 'descendant_id', $maxDepth);
+        return $this->relatives($member, 'ancestor_id', 'descendant_id', $maxDepth, $at);
     }
 
     /**
      * @return Collection<int, array{Member, int}>
      */
-    private function relatives(Member $member, string $from, string $to, ?int $maxDepth): Collection
+    private function relatives(Member $member, string $from, string $to, ?int $maxDepth, ?CarbonImmutable $at): Collection
     {
         if ($maxDepth !== null && $maxDepth < 1) {
             throw new InvalidArgumentException("A maximum depth must be 1 or more; {$maxDepth} given.");
@@ -165,6 +183,8 @@ final readonly class ClosureTree
             // Depth 0 is the member's path to itself: structure, not a relative.
             ->where('depth', '>', 0)
             ->when($maxDepth !== null, static fn (Builder $query): Builder => $query->where('depth', '<=', $maxDepth))
+            // A path holds from its effective_from on: nothing ends it.
+            ->when($at !== null, static fn (Builder $query): Builder => $query->where('effective_from', '<=', $at))
             ->orderBy('depth')
             ->orderBy($to)
             ->get([$to, 'depth']);

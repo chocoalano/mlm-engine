@@ -191,6 +191,7 @@ final class PlacementAssignmentTest extends DatabaseTestCase
             'ancestor_id' => $members['Alice']->id,
             'descendant_id' => $members['Charlie']->id,
             'depth' => 2,
+            'effective_from' => now(),
         ]);
         $before = $this->placementState();
 

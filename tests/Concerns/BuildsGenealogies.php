@@ -111,6 +111,28 @@ trait BuildsGenealogies
     }
 
     /**
+     * When each path of one tree took effect, exactly as stored, by member
+     * code.
+     *
+     * @param  'sponsor'|'placement'  $tree
+     * @return array<string, string> "A > B @1" => "2026-01-01 10:00:00", by path
+     */
+    protected function pathMoments(string $tree, ?string $connection = null): array
+    {
+        $codes = Member::query()->pluck('member_code', 'id');
+
+        $moments = DB::connection($connection)->table('mlm_genealogy_paths')->where('tree_type', $tree)->get()
+            ->mapWithKeys(static fn (object $path): array => [
+                "{$codes[$path->ancestor_id]} > {$codes[$path->descendant_id]} @{$path->depth}" => (string) $path->effective_from,
+            ])
+            ->all();
+
+        ksort($moments);
+
+        return $moments;
+    }
+
+    /**
      * @param  Collection<int, SponsorRelative|PlacementRelative>  $relatives
      * @return list<string> "code@depth", in the order given
      */

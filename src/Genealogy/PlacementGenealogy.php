@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Genealogy;
 
+use Carbon\CarbonImmutable;
+use DateTimeInterface;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
+use PandaBear\Mlm\Support\EffectiveMoment;
 
 /**
  * Where each member is structurally placed, within one program.
@@ -24,6 +29,11 @@ use PandaBear\Mlm\Models\PlacementEdge;
  *
  * Direct placements are edges. Every ancestor/descendant pair they imply is
  * kept in the shared closure table under tree_type 'placement'.
+ *
+ * The tree only grows, and remembers when: each edge its `placed_at`, each
+ * path the moment it took effect — independently of when the same members
+ * met in the sponsor tree. The queries without a moment read the tree as it
+ * stands; the `…At()` queries read it as it stood at a moment.
  */
 final class PlacementGenealogy
 {
@@ -73,22 +83,24 @@ final class PlacementGenealogy
                 throw InvalidPlacementAssignment::cycle($member, $parent);
             }
 
-            $this->tree->ensureSelfPaths($connection, [$member->getKey(), $parent->getKey()]);
-
+            // One moment for the whole placement: the edge, any self path it
+            // needs and every path it creates take effect together.
             $edge = new PlacementEdge;
             $id = $edge->newUniqueId();
-            $now = $edge->freshTimestamp();
+            $at = EffectiveMoment::of($edge->freshTimestamp());
+
+            $this->tree->ensureSelfPaths($connection, [$member->getKey(), $parent->getKey()], $at);
 
             $connection->table(self::EDGES)->insert([
                 'id' => $id,
                 'member_id' => $member->getKey(),
                 'parent_id' => $parent->getKey(),
-                'placed_at' => $now,
-                'created_at' => $now,
-                'updated_at' => $now,
+                'placed_at' => $at,
+                'created_at' => $at,
+                'updated_at' => $at,
             ]);
 
-            $this->tree->attach($connection, $parent->getKey(), $member->getKey());
+            $this->tree->attach($connection, $parent->getKey(), $member->getKey(), $at);
 
             return PlacementEdge::on($connection->getName())->findOrFail($id);
         });
@@ -100,13 +112,16 @@ final class PlacementGenealogy
      */
     public function directParent(Member $member): ?Member
     {
-        return $member->newQuery()
-            ->where('program_id', $member->program_id)
-            ->whereIn(
-                $member->getKeyName(),
-                $member->getConnection()->table(self::EDGES)->select('parent_id')->where('member_id', $member->getKey()),
-            )
-            ->first();
+        return $this->parentOf($member, null);
+    }
+
+    /**
+     * The member's placement parent at `$at`: null while it was not placed
+     * yet, even if it is placed now.
+     */
+    public function directParentAt(Member $member, DateTimeInterface $at): ?Member
+    {
+        return $this->parentOf($member, EffectiveMoment::of($at));
     }
 
     /**
@@ -117,14 +132,18 @@ final class PlacementGenealogy
      */
     public function directChildren(Member $parent): EloquentCollection
     {
-        return $parent->newQuery()
-            ->select($parent->qualifyColumn('*'))
-            ->join(self::EDGES, self::EDGES.'.member_id', '=', $parent->getQualifiedKeyName())
-            ->where(self::EDGES.'.parent_id', $parent->getKey())
-            ->where($parent->qualifyColumn('program_id'), $parent->program_id)
-            ->orderBy(self::EDGES.'.placed_at')
-            ->orderBy($parent->getQualifiedKeyName())
-            ->get();
+        return $this->placedUnder($parent, null);
+    }
+
+    /**
+     * The members placed directly under `$parent` by `$at`, in the order they
+     * were placed.
+     *
+     * @return EloquentCollection<int, Member>
+     */
+    public function directChildrenAt(Member $parent, DateTimeInterface $at): EloquentCollection
+    {
+        return $this->placedUnder($parent, EffectiveMoment::of($at));
     }
 
     /**
@@ -141,6 +160,19 @@ final class PlacementGenealogy
     }
 
     /**
+     * The member's placement line as it stood at `$at`: only the placements
+     * already in effect then, so a line completed later is cut where it was
+     * still open.
+     *
+     * @return Collection<int, PlacementRelative>
+     */
+    public function ancestorsAt(Member $member, DateTimeInterface $at, ?int $maxDepth = null): Collection
+    {
+        return $this->tree->ancestors($member, $maxDepth, EffectiveMoment::of($at))
+            ->map(static fn (array $relative): PlacementRelative => new PlacementRelative(...$relative));
+    }
+
+    /**
      * Everyone placed under the member, directly or further down — nearest
      * first, then in the order the members were created. The member itself is
      * not included. `$maxDepth` 1 is the direct children only.
@@ -151,5 +183,52 @@ final class PlacementGenealogy
     {
         return $this->tree->descendants($member, $maxDepth)
             ->map(static fn (array $relative): PlacementRelative => new PlacementRelative(...$relative));
+    }
+
+    /**
+     * Everyone below the member in the placement tree as it stood at `$at`: a
+     * member placed later, or a subtree attached later, is not included.
+     *
+     * @return Collection<int, PlacementRelative>
+     */
+    public function descendantsAt(Member $member, DateTimeInterface $at, ?int $maxDepth = null): Collection
+    {
+        return $this->tree->descendants($member, $maxDepth, EffectiveMoment::of($at))
+            ->map(static fn (array $relative): PlacementRelative => new PlacementRelative(...$relative));
+    }
+
+    /**
+     * With `$at`, only a placement made by then.
+     */
+    private function parentOf(Member $member, ?CarbonImmutable $at): ?Member
+    {
+        return $member->newQuery()
+            ->where('program_id', $member->program_id)
+            ->whereIn(
+                $member->getKeyName(),
+                $member->getConnection()->table(self::EDGES)
+                    ->select('parent_id')
+                    ->where('member_id', $member->getKey())
+                    ->when($at !== null, static fn (Builder $query): Builder => $query->where('placed_at', '<=', $at)),
+            )
+            ->first();
+    }
+
+    /**
+     * With `$at`, only placements made by then.
+     *
+     * @return EloquentCollection<int, Member>
+     */
+    private function placedUnder(Member $parent, ?CarbonImmutable $at): EloquentCollection
+    {
+        return $parent->newQuery()
+            ->select($parent->qualifyColumn('*'))
+            ->join(self::EDGES, self::EDGES.'.member_id', '=', $parent->getQualifiedKeyName())
+            ->where(self::EDGES.'.parent_id', $parent->getKey())
+            ->where($parent->qualifyColumn('program_id'), $parent->program_id)
+            ->when($at !== null, static fn (EloquentBuilder $query): EloquentBuilder => $query->where(self::EDGES.'.placed_at', '<=', $at))
+            ->orderBy(self::EDGES.'.placed_at')
+            ->orderBy($parent->getQualifiedKeyName())
+            ->get();
     }
 }

@@ -49,6 +49,21 @@ final class SponsorGenealogySchemaTest extends DatabaseTestCase
             'ancestor_id' => $members['Alice']->id,
             'descendant_id' => $members['Bob']->id,
             'depth' => 1,
+            'effective_from' => now(),
+        ]);
+    }
+
+    public function test_the_database_refuses_a_path_without_the_moment_it_took_effect(): void
+    {
+        $members = $this->sponsoredPair('Charlie');
+
+        $this->expectException(QueryException::class);
+
+        DB::table('mlm_genealogy_paths')->insert([
+            'tree_type' => 'sponsor',
+            'ancestor_id' => $members['Charlie']->id,
+            'descendant_id' => $members['Charlie']->id,
+            'depth' => 0,
         ]);
     }
 

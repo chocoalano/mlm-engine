@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** Version 0.1 provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and a metrics foundation — a registry, an engine and the built-in `member.volume` metric. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Temporal genealogy, network metrics, plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and a metrics foundation — a registry, an engine and the built-in `member.volume` metric. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Network metrics, plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -184,6 +184,26 @@ $genealogy->descendants($alice, maxDepth: 1);  // direct members only
 
 Both return `SponsorRelative` objects — the `member` and its `depth`, the number of sponsorship steps between them — nearest first. The member itself is never included. Results stay within the member's program.
 
+### History
+
+The queries above read the sponsor tree as it stands. Each has an `…At()` counterpart that reads it as it stood at a moment:
+
+```php
+use Carbon\CarbonImmutable;
+
+$march = CarbonImmutable::parse('2026-03-01 00:00:00');
+
+$genealogy->directSponsorAt($bob, $march);       // null if Bob was not sponsored yet
+$genealogy->directMembersAt($alice, $march);     // those Alice had sponsored by then
+$genealogy->ancestorsAt($diana, $march);         // her sponsor line on that day
+$genealogy->descendantsAt($alice, $march, maxDepth: 1);
+```
+
+- A sponsorship counts from the second it was assigned, inclusive, and never ends: sponsors are not reassigned.
+- A line is complete from the moment its last link was made. If Bob sponsored Charlie in January and Alice sponsored Bob in March, Charlie is below Alice from March, not January.
+- A moment is compared as the same instant in the application's timezone, to the second, as volume's effective moments are.
+- The history comes from the moment each assignment was made. There is no way to backdate one.
+
 ### Cycle prevention
 
 A member cannot be sponsored by anyone in its own sponsor subtree: if Alice sponsored Bob and Bob sponsored Charlie, Charlie cannot sponsor Alice. Refused assignments throw `InvalidSponsorAssignment` and change nothing. Every assignment runs in one transaction.
@@ -210,12 +230,19 @@ $placement->directParent($charlie);         // Bob, or null for a placement root
 $placement->directChildren($bob);           // members placed directly under Bob, in placement order
 $placement->ancestors($charlie);            // PlacementRelative: member + depth, nearest first
 $placement->descendants($bob, maxDepth: 1);
+
+// As the placement tree stood at a moment, as for sponsorship:
+$placement->directParentAt($charlie, CarbonImmutable::parse('2026-06-01 00:00:00'));
+$placement->directChildrenAt($bob, CarbonImmutable::parse('2026-06-01 00:00:00'));
+$placement->ancestorsAt($charlie, CarbonImmutable::parse('2026-06-01 00:00:00'));
+$placement->descendantsAt($bob, CarbonImmutable::parse('2026-06-01 00:00:00'), maxDepth: 1);
 ```
 
 - A member has at most one placement parent, and a member without one is a placement root. A program may have many.
 - A parent may have any number of members placed under it. There is no capacity, position or slot in this generic layer.
 - Member and parent must be in the same program. A member cannot be placed under itself or under anyone in its own placement subtree. Cycle checks only see placement, so placement may even run opposite to sponsorship.
 - A placement is made once. There is no move or removal yet.
+- Placement keeps its own history: a member sponsored in January and placed in March was sponsored, but not yet placed, in February.
 - A member that already has members placed under it can still receive its first placement parent; its whole placement subtree is attached beneath that parent.
 - Refused placements throw `InvalidPlacementAssignment` and change nothing. Every placement runs in one transaction.
 
@@ -354,7 +381,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: temporal genealogy, network metrics, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: network metrics, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 
