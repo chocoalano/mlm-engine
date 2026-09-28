@@ -125,4 +125,31 @@ final class QuantityTest extends TestCase
         $this->assertTrue(Quantity::of('-0.000001')->isNegative());
         $this->assertTrue(Quantity::of('2.50')->equals(Quantity::of('2.5')));
     }
+
+    /**
+     * @return array<string, array{string, string, int}>
+     */
+    public static function orderings(): array
+    {
+        return [
+            'equal' => ['25.5', '25.50', 0],
+            'zero and zero' => ['0', '-0.000', 0],
+            'smaller whole' => ['9', '10', -1],
+            'larger fraction' => ['0.5', '0.25', 1],
+            'fraction below one' => ['0.999999', '1', -1],
+            'negative below zero' => ['-0.000001', '0', -1],
+            'positive above negative' => ['1', '-1000', 1],
+            'more negative is smaller' => ['-10', '-9.5', -1],
+            'less negative is larger' => ['-0.5', '-0.75', 1],
+            'beyond 64 bits' => ['99999999999999999999.1', '99999999999999999999.09', 1],
+            'beyond 64 bits, negative' => ['-99999999999999999999.1', '-99999999999999999999.09', -1],
+        ];
+    }
+
+    #[DataProvider('orderings')]
+    public function test_it_compares_exactly_at_any_size(string $left, string $right, int $expected): void
+    {
+        $this->assertSame($expected, Quantity::of($left)->compare(Quantity::of($right)));
+        $this->assertSame(-$expected, Quantity::of($right)->compare(Quantity::of($left)));
+    }
 }
