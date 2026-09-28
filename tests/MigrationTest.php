@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 final class MigrationTest extends TestCase
 {
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -64,6 +64,26 @@ final class MigrationTest extends TestCase
         );
     }
 
+    public function test_the_sponsor_edges_table_has_exactly_the_minimum_columns(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'member_id', 'sponsor_id', 'assigned_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_sponsor_edges'),
+        );
+    }
+
+    public function test_the_genealogy_paths_table_has_exactly_the_minimum_columns(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['tree_type', 'ancestor_id', 'descendant_id', 'depth'],
+            Schema::getColumnListing('mlm_genealogy_paths'),
+        );
+    }
+
     public function test_the_unique_indexes_scope_identities_to_their_owner(): void
     {
         $this->artisan('migrate')->assertSuccessful();
@@ -75,6 +95,23 @@ final class MigrationTest extends TestCase
         );
         $this->assertSame([['program_id', 'code']], $this->uniqueIndexColumns('mlm_plans'));
         $this->assertSame([['plan_id', 'version']], $this->uniqueIndexColumns('mlm_plan_versions'));
+        $this->assertSame([['member_id']], $this->uniqueIndexColumns('mlm_sponsor_edges'));
+    }
+
+    public function test_the_genealogy_indexes_serve_both_directions(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $paths = collect(Schema::getIndexes('mlm_genealogy_paths'));
+
+        // One path per pair and tree; its prefix finds descendants.
+        $this->assertSame(['tree_type', 'ancestor_id', 'descendant_id'], $paths->firstWhere('primary', true)['columns'] ?? null);
+
+        // The reverse direction, for ancestors.
+        $this->assertContains(['tree_type', 'descendant_id', 'depth'], $paths->pluck('columns')->all());
+
+        // Who a sponsor sponsored directly.
+        $this->assertContains(['sponsor_id'], collect(Schema::getIndexes('mlm_sponsor_edges'))->pluck('columns')->all());
     }
 
     /**
@@ -86,6 +123,10 @@ final class MigrationTest extends TestCase
             'members belong to programs' => ['mlm_members', 'program_id', 'mlm_programs'],
             'plans belong to programs' => ['mlm_plans', 'program_id', 'mlm_programs'],
             'plan versions belong to plans' => ['mlm_plan_versions', 'plan_id', 'mlm_plans'],
+            'a sponsor edge names its member' => ['mlm_sponsor_edges', 'member_id', 'mlm_members'],
+            'a sponsor edge names its sponsor' => ['mlm_sponsor_edges', 'sponsor_id', 'mlm_members'],
+            'a path names its ancestor' => ['mlm_genealogy_paths', 'ancestor_id', 'mlm_members'],
+            'a path names its descendant' => ['mlm_genealogy_paths', 'descendant_id', 'mlm_members'],
         ];
     }
 
@@ -94,13 +135,12 @@ final class MigrationTest extends TestCase
     {
         $this->artisan('migrate')->assertSuccessful();
 
-        $foreignKeys = Schema::getForeignKeys($table);
+        $foreignKey = collect(Schema::getForeignKeys($table))->firstWhere('columns', [$column]);
 
-        $this->assertCount(1, $foreignKeys);
-        $this->assertSame([$column], $foreignKeys[0]['columns']);
-        $this->assertSame($owner, $foreignKeys[0]['foreign_table']);
-        $this->assertSame(['id'], $foreignKeys[0]['foreign_columns']);
-        $this->assertSame('restrict', $foreignKeys[0]['on_delete']);
+        $this->assertIsArray($foreignKey, "{$table}.{$column} has no foreign key.");
+        $this->assertSame($owner, $foreignKey['foreign_table']);
+        $this->assertSame(['id'], $foreignKey['foreign_columns']);
+        $this->assertSame('restrict', $foreignKey['on_delete']);
     }
 
     public function test_the_plan_version_status_defaults_to_draft(): void
