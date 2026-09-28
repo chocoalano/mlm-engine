@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 1.1.
+Accepted — Phase 1.1. Amended in Phase 2.4: validation checks the definition (ADR-014).
 
 ## Context
 
@@ -12,8 +12,8 @@ A plan version is edited, checked, released and put into force, and later replac
 
 - **States**: `draft → validated → published → active → superseded → archived`, stored as those lowercase strings in `status` (`PlanVersionStatus`). Every state has exactly one successor; `archived` has none. No skipping, no going back.
 - **Timestamps**: entering a state stamps its column once — `validated_at`, `published_at`, `activated_at`, `superseded_at`, `archived_at`. A later state never stamps an earlier column, and a stamp never changes afterwards.
-- **Immutability boundary**: only a `draft` is mutable. `validated` is locked too: re-validation after an edit needs rule tables that do not exist yet, and until then an editable validated version would be "validated" in a form nobody checked. `PlanVersion::isMutable()` and `assertMutable()` are what future rule tables call before changing a version's definition. A locked version cannot be deleted.
-- **One supported writer**: `PlanVersionLifecycle` creates versions and moves them: `draft()`, `markValidated()`, `publish()`, `activate()`, `archive()`. There is no public supersede. The model refuses mass assignment of any column and refuses a plain Eloquent save that changes `plan_id`, `version`, `status` or a lifecycle timestamp. A version is always created as a draft.
+- **Immutability boundary**: only a `draft` is mutable. `validated` is locked too: an editable validated version would be "validated" in a form nobody checked. `PlanDefinitionEditor` checks `assertMutable()` on the freshly locked version before every change to its definition, so from `validated` on a definition never changes; a change is a clone into a new draft (ADR-014). A locked version cannot be deleted.
+- **One supported writer**: `PlanVersionLifecycle` creates versions and moves them: `draft()`, `markValidated()`, `publish()`, `activate()`, `archive()`. Since Phase 2.4, `markValidated()` validates the whole definition under the version's lock and leaves a draft untouched when it fails (ADR-014). There is no public supersede. The model refuses mass assignment of any column and refuses a plain Eloquent save that changes `plan_id`, `version`, `status` or a lifecycle timestamp. A version is always created as a draft.
 - **Activation** runs in one transaction on the package connection. It locks the plan row, re-reads the target version, and requires it to be `published` and newer than the active version. It supersedes the active version and activates the target at the same instant. Every write is a compare-and-set on the expected status.
 - **Only archive what was replaced**: `archive()` accepts only a `superseded` version.
 - **No redundant state**: no `is_active` flag and no `active_version_id` on the plan. `status` is the single source of truth, and `Plan::currentActiveVersion()` returns zero or one — more than one throws `MultipleRecordsFoundException` rather than picking one.

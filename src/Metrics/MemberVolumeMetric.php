@@ -13,7 +13,7 @@ use PandaBear\Mlm\Volume\VolumeTotals;
  * `VolumeTotals::forMember()`: reversals net out, the range is
  * [from, until). The member's genealogy plays no part.
  */
-final readonly class MemberVolumeMetric implements Metric
+final readonly class MemberVolumeMetric implements PlanConfigurableMetric
 {
     public const KEY = 'member.volume';
 
@@ -31,11 +31,25 @@ final readonly class MemberVolumeMetric implements Metric
      */
     public function resolve(MetricContext $context): MetricValue
     {
-        MetricParameters::refuseUnknown(self::KEY, $context->parameters, self::PARAMETERS);
-        $type = MetricParameters::volumeType(self::KEY, $context->parameters);
-
         return MetricValue::fromQuantity(
-            $this->totals->forMember($context->member, $type, $context->from, $context->until),
+            $this->totals->forMember($context->member, $this->type($context->parameters), $context->from, $context->until),
         );
+    }
+
+    public function validatePlanParameters(array $parameters): void
+    {
+        $this->type($parameters);
+    }
+
+    /**
+     * The one check both resolving and plan validation apply.
+     *
+     * @param  array<string, mixed>  $parameters
+     */
+    private function type(array $parameters): string
+    {
+        MetricParameters::refuseUnknown(self::KEY, $parameters, self::PARAMETERS);
+
+        return MetricParameters::volumeType(self::KEY, $parameters);
     }
 }

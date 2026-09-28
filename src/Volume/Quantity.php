@@ -122,6 +122,23 @@ final readonly class Quantity implements Stringable
     }
 
     /**
+     * -1, 0 or 1 as this quantity is below, equal to or above `$other`,
+     * compared exactly, at any size: by sign, then by the count of digits of
+     * their millionths, then digit by digit.
+     */
+    public function compare(self $other): int
+    {
+        if ($this->isNegative() !== $other->isNegative()) {
+            return $this->isNegative() ? -1 : 1;
+        }
+
+        [$mine, $theirs] = [ltrim($this->toMillionths(), '-'), ltrim($other->toMillionths(), '-')];
+        $magnitude = (strlen($mine) <=> strlen($theirs)) ?: (strcmp($mine, $theirs) <=> 0);
+
+        return $this->isNegative() ? -$magnitude : $magnitude;
+    }
+
+    /**
      * The canonical decimal string.
      */
     public function value(): string

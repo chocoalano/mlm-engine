@@ -11,6 +11,23 @@ use PandaPanel\PandaPanelServiceProvider;
 
 abstract class TestCase extends Orchestra
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // Close the test's connections as its application is destroyed, not
+        // whenever PHP's cycle collector frees the application: a real
+        // database counts every connection left open, and over a long suite
+        // PostgreSQL's limit was reached.
+        $this->beforeApplicationDestroyed(function (): void {
+            $db = $this->app->make('db');
+
+            foreach (array_keys($db->getConnections()) as $name) {
+                $db->purge($name);
+            }
+        });
+    }
+
     /**
      * Testbench ignores package discovery, so both providers are listed by
      * hand: Panda Panel's for `PanelManager` and `panel:plugins`, and this

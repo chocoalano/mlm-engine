@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning and a version lifecycle; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Plan rules, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, checked but not yet evaluated; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rule evaluation, qualification, rank, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -149,7 +149,73 @@ draft → validated → published → active → superseded → archived
 - Only a draft is mutable. From `validated` on, a version is locked: `isMutable()` is false, `assertMutable()` throws `PlanVersionNotMutable`, and it cannot be deleted.
 - `status` cannot be mass assigned, and a status or timestamp set directly on the model is refused on save. Raw query-builder writes bypass these guards, as they bypass every Eloquent rule.
 
-Plan versions do not carry any rules yet: there is nothing to calculate with.
+### Plan definition
+
+A version's definition is its **components**, each with **rules**. A draft is edited; from `validated` on, the definition never changes.
+
+- A component selects a **driver** by key: trusted code the application registers. The database stores the key, never a class name. The package ships no driver yet; business drivers arrive with their domains.
+- A component's parameters are plain JSON data for its driver. Nothing in them is ever run.
+- A rule is a tree in a small, safe language: groups (`all`, `any`) of conditions on registered metrics, with the operators `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in` and `between` (both bounds included) and exact decimal operands. No expressions, formulas, SQL or code.
+- A rule may only name a metric that implements `PlanConfigurableMetric` — the three built-ins do — so its parameters can be checked before anything is resolved.
+
+```php
+use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
+use PandaBear\Mlm\Planning\PlanComponentDefinition;
+use PandaBear\Mlm\Planning\PlanComponentDriver;
+use PandaBear\Mlm\Planning\PlanComponentDriverRegistry;
+
+final class AcmeCriteriaDriver implements PlanComponentDriver
+{
+    public function key(): string
+    {
+        return 'acme.criteria';
+    }
+
+    public function validate(PlanComponentDefinition $component): void
+    {
+        if ($component->rules === []) {
+            throw InvalidPlanDefinition::input('rules', 'acme.criteria needs at least one rule.');
+        }
+    }
+}
+
+// In a service provider's register():
+$this->callAfterResolving(PlanComponentDriverRegistry::class, function (PlanComponentDriverRegistry $drivers): void {
+    $drivers->register(new AcmeCriteriaDriver);
+});
+```
+
+```php
+use PandaBear\Mlm\Planning\PlanDefinitionCloner;
+use PandaBear\Mlm\Planning\PlanDefinitionEditor;
+use PandaBear\Mlm\Planning\Rules\MetricCondition;
+use PandaBear\Mlm\Planning\Rules\RuleDefinition;
+use PandaBear\Mlm\Planning\Rules\RuleGroup;
+
+$editor = app(PlanDefinitionEditor::class);
+
+$draft = $lifecycle->draft($plan);
+$entry = $editor->addComponent($draft, 'entry', 'acme.criteria', 'Entry criteria');
+
+$editor->addRule($entry, 'active', 'Active member', RuleDefinition::all(
+    MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100'),
+    RuleGroup::any(
+        MetricCondition::of('sponsor.network.volume', ['type' => 'sales', 'max_depth' => 3], '>=', '500'),
+        MetricCondition::of('placement.network.volume', ['type' => 'sales'], 'between', '400', '900'),
+    ),
+));
+
+$lifecycle->markValidated($draft);   // checks the whole definition, or throws InvalidPlanDefinition
+
+$next = app(PlanDefinitionCloner::class)->cloneToNewDraft($draft);   // the next version, a draft holding a copy
+```
+
+- `PlanDefinitionEditor` is the only way to change a definition. It adds, updates and removes components and rules, and works on drafts only — deciding from the stored, locked version, never from a model in memory. Changing a locked version throws `PlanVersionNotMutable`.
+- `markValidated()` checks the whole definition first: drivers registered and satisfied, rules well-formed, metrics registered, plan-configurable and given valid parameters. If anything fails, the version stays a draft and nothing changes. An empty definition is valid.
+- To change a validated, published or active definition, clone it into a new draft with `PlanDefinitionCloner`, edit the draft and validate it.
+- Read a definition through `$version->components`, `$component->rules` and `$rule->definition`. Components and rules are read-only through Eloquent.
+
+**Rules are not evaluated yet.** Nothing decides whether a member meets a rule: qualification, ranks and commission are not implemented.
 
 ## Sponsor genealogy
 
@@ -402,7 +468,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, plan components, rules and parameters, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: rule evaluation, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, ranks, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
 
 ## Testing
 

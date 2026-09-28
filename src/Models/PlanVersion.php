@@ -5,15 +5,18 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Models;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use PandaBear\Mlm\Database\Factories\PlanVersionFactory;
 use PandaBear\Mlm\Exceptions\InvalidPlanVersionTransition;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
 use PandaBear\Mlm\Planning\PlanVersionStatus;
 
 /**
- * One numbered revision of a plan. Future planning rules attach here.
+ * One numbered revision of a plan, and the owner of its whole definition:
+ * its components and their rules (ADR-014).
  *
  * Every column is owned by `PlanVersionLifecycle`: it creates versions and
  * moves them between statuses. The model only guards — a version is born a
@@ -31,6 +34,7 @@ use PandaBear\Mlm\Planning\PlanVersionStatus;
  * @property CarbonImmutable|null $superseded_at
  * @property CarbonImmutable|null $archived_at
  * @property-read Plan $plan
+ * @property-read Collection<int, PlanComponent> $components
  */
 final class PlanVersion extends MlmModel
 {
@@ -87,14 +91,25 @@ final class PlanVersion extends MlmModel
         return $this->belongsTo(Plan::class);
     }
 
+    /**
+     * The version's definition, in order: by position, then id. Written by
+     * `PlanDefinitionEditor` alone.
+     *
+     * @return HasMany<PlanComponent, $this>
+     */
+    public function components(): HasMany
+    {
+        return $this->hasMany(PlanComponent::class)->orderBy('position')->orderBy('id');
+    }
+
     public function isMutable(): bool
     {
         return $this->status->isMutable();
     }
 
     /**
-     * For anything that belongs to this version's definition — the rule
-     * tables to come — to call before it changes.
+     * For anything that belongs to this version's definition to call before
+     * it changes — on a freshly locked copy, as `PlanDefinitionEditor` does.
      *
      * @throws PlanVersionNotMutable
      */

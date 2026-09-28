@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Planning;
 
 use Carbon\CarbonInterface;
+use Illuminate\Container\Container;
+use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidPlanVersionTransition;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\PlanVersion;
@@ -22,9 +24,16 @@ use PandaBear\Mlm\Models\PlanVersion;
  * Each write is a compare-and-set on the status the version is expected to
  * have, made after locking a fresh copy of the row, so a stale model instance
  * can never move a version that has since moved on.
+ *
+ * A version is validated only if its complete definition is (ADR-014).
  */
 final class PlanVersionLifecycle
 {
+    /**
+     * @param  PlanDefinitionValidator|null  $validator  resolved from the container when not given
+     */
+    public function __construct(private ?PlanDefinitionValidator $validator = null) {}
+
     /**
      * A new draft, numbered one past the highest version the plan has.
      */
@@ -43,9 +52,31 @@ final class PlanVersionLifecycle
         });
     }
 
+    /**
+     * Validates the draft's complete definition and, if it holds, marks the
+     * version validated — in one transaction, under the version row's lock,
+     * the lock every definition edit takes. No edit can land between the
+     * check and the transition, and a failed check leaves the version a draft
+     * with nothing changed.
+     *
+     * @throws InvalidPlanDefinition
+     * @throws InvalidPlanVersionTransition
+     */
     public function markValidated(PlanVersion $version): PlanVersion
     {
-        return $this->advance($version, PlanVersionStatus::Validated);
+        $version->getConnection()->transaction(function () use ($version): void {
+            $current = $this->lockFresh($version);
+
+            if (! $current->status->canTransitionTo(PlanVersionStatus::Validated)) {
+                throw InvalidPlanVersionTransition::notNextStep($current, PlanVersionStatus::Validated);
+            }
+
+            $this->validator()->validate($current);
+
+            $this->move($current, PlanVersionStatus::Validated, $current->freshTimestamp());
+        });
+
+        return $version->refresh();
     }
 
     public function publish(PlanVersion $version): PlanVersion
@@ -116,6 +147,11 @@ final class PlanVersionLifecycle
         });
 
         return $version->refresh();
+    }
+
+    private function validator(): PlanDefinitionValidator
+    {
+        return $this->validator ??= Container::getInstance()->make(PlanDefinitionValidator::class);
     }
 
     private function lockFresh(PlanVersion $version): PlanVersion

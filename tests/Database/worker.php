@@ -24,8 +24,11 @@ use Orchestra\Testbench\Foundation\Application;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\PandaMlmServiceProvider;
+use PandaBear\Mlm\Planning\PlanDefinitionEditor;
+use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Database\ExternalDatabase;
 use PandaBear\Mlm\Volume\Quantity;
 use PandaBear\Mlm\Volume\RecordVolume;
@@ -80,6 +83,9 @@ try {
             idempotencyKey: $job['key'],
             effectiveAt: CarbonImmutable::parse($job['effective_at']),
         ))->getKey(),
+        'plan_add_component' => app(PlanDefinitionEditor::class)
+            ->addComponent(PlanVersion::findOrFail($job['version']), $job['key'], $job['driver'], $job['name'])->getKey(),
+        'plan_validate' => app(PlanVersionLifecycle::class)->markValidated(PlanVersion::findOrFail($job['version']))->getKey(),
         'hold' => (static function () use ($job, $database, $emit): string {
             DB::beginTransaction();
             DB::table('mlm_volume_entries')->insert($job['row']);
