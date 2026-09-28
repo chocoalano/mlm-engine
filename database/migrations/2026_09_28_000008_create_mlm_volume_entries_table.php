@@ -24,7 +24,12 @@ return new class extends Migration
         // Immutable history: an entry is never updated or deleted, and a
         // correction is a second entry that reverses the first.
         Schema::create('mlm_volume_entries', function (Blueprint $table): void {
-            $table->ulid('id')->primary();
+            // The primary key is declared explicitly, before any foreign key.
+            // A fluent ->primary() is added after them, and PostgreSQL then
+            // refuses the self-reference below (reversal_of_id -> id) because
+            // id has no key yet.
+            $table->ulid('id');
+            $table->primary('id');
 
             // Denormalised from the member on purpose: an explicit boundary
             // and program-scoped keys. The recorder takes it from the stored
