@@ -20,7 +20,7 @@ use PandaBear\Mlm\Exceptions\InvalidMetricParameters;
  * Generic graph arithmetic, not a network type: no legs, sides, slots or
  * pairing.
  */
-final readonly class PlacementNetworkVolumeMetric implements Metric
+final readonly class PlacementNetworkVolumeMetric implements PlanConfigurableMetric
 {
     public const KEY = 'placement.network.volume';
 
@@ -38,14 +38,29 @@ final readonly class PlacementNetworkVolumeMetric implements Metric
      */
     public function resolve(MetricContext $context): MetricValue
     {
-        MetricParameters::refuseUnknown(self::KEY, $context->parameters, self::PARAMETERS);
+        [$type, $maxDepth] = $this->parameters($context->parameters);
 
-        return MetricValue::fromQuantity($this->totals->forPlacementNetwork(
-            $context->member,
-            MetricParameters::volumeType(self::KEY, $context->parameters),
-            MetricParameters::maxDepth(self::KEY, $context->parameters),
-            $context->from,
-            $context->until,
-        ));
+        return MetricValue::fromQuantity($this->totals->forPlacementNetwork($context->member, $type, $maxDepth, $context->from, $context->until));
+    }
+
+    public function validatePlanParameters(array $parameters): void
+    {
+        $this->parameters($parameters);
+    }
+
+    /**
+     * The one check both resolving and plan validation apply.
+     *
+     * @param  array<string, mixed>  $parameters
+     * @return array{string, int|null}
+     */
+    private function parameters(array $parameters): array
+    {
+        MetricParameters::refuseUnknown(self::KEY, $parameters, self::PARAMETERS);
+
+        return [
+            MetricParameters::volumeType(self::KEY, $parameters),
+            MetricParameters::maxDepth(self::KEY, $parameters),
+        ];
     }
 }

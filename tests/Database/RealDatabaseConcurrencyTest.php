@@ -7,11 +7,15 @@ namespace PandaBear\Mlm\Tests\Database;
 use Illuminate\Support\Facades\DB;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
+use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
+use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Tests\DatabaseTestCase;
@@ -193,6 +197,44 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
         $this->assertTrue($this->finish($sponsor)['ok']);
         $this->assertTrue($this->finish($placement)['ok']);
+    }
+
+    public function test_a_definition_edit_and_a_validation_never_cross(): void
+    {
+        $version = $this->app->make(PlanVersionLifecycle::class)->draft(Plan::factory()->create());
+
+        // Hold the version row: both the edit and the validation lock it.
+        DB::connection($this->gateConnection())->beginTransaction();
+        DB::connection($this->gateConnection())->select('SELECT id FROM mlm_plan_versions WHERE id = ? FOR UPDATE', [$version->id]);
+
+        // A component whose driver no worker registers: if it lands first,
+        // validation must refuse the version.
+        $edit = $this->start(['op' => 'plan_add_component', 'version' => $version->id, 'key' => 'late', 'driver' => 'acme.unregistered', 'name' => 'Late']);
+        $this->awaitWaitingOn(['mlm_plan_versions']);
+        $validate = $this->start(['op' => 'plan_validate', 'version' => $version->id]);
+        $this->awaitWaitingOn(['mlm_plan_versions', 'mlm_plan_versions']);
+
+        $this->openGate();
+
+        [$edited, $validated] = [$this->finish($edit), $this->finish($validate)];
+        $shown = json_encode([$edited, $validated], JSON_THROW_ON_ERROR);
+        $status = DB::table('mlm_plan_versions')->where('id', $version->id)->value('status');
+        $components = DB::table('mlm_plan_components')->where('plan_version_id', $version->id)->count();
+
+        // Never a validated version with an edit committed after its check.
+        $this->assertFalse($status === 'validated' && $components > 0, $shown);
+
+        if ($edited['ok']) {
+            // The edit went first; the validation saw it and refused.
+            $this->assertFalse($validated['ok'], $shown);
+            $this->assertSame(InvalidPlanDefinition::class, $validated['exception'], $shown);
+            $this->assertSame(['draft', 1], [$status, $components]);
+        } else {
+            // The validation went first; the edit found the version locked.
+            $this->assertTrue($validated['ok'], $shown);
+            $this->assertSame(PlanVersionNotMutable::class, $edited['exception'], $shown);
+            $this->assertSame(['validated', 0], [$status, $components]);
+        }
     }
 
     public function test_identical_volume_commands_racing_record_one_entry(): void

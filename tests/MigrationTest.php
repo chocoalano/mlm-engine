@@ -4,12 +4,15 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Tests;
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\Program;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 final class MigrationTest extends TestCase
 {
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -240,6 +243,82 @@ final class MigrationTest extends TestCase
         $this->assertSame($owner, $foreignKey['foreign_table']);
         $this->assertSame(['id'], $foreignKey['foreign_columns']);
         $this->assertSame('restrict', $foreignKey['on_delete']);
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function ownedDefinitions(): array
+    {
+        return [
+            'a component belongs to its plan version' => ['mlm_plan_components', 'plan_version_id', 'mlm_plan_versions'],
+            'a rule belongs to its component' => ['mlm_plan_rules', 'plan_component_id', 'mlm_plan_components'],
+        ];
+    }
+
+    /**
+     * A definition is owned outright: it goes when its draft is deleted.
+     */
+    #[DataProvider('ownedDefinitions')]
+    public function test_a_definition_row_references_its_owner_and_goes_with_it(string $table, string $column, string $owner): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $foreignKey = collect(Schema::getForeignKeys($table))->firstWhere('columns', [$column]);
+
+        $this->assertIsArray($foreignKey, "{$table}.{$column} has no foreign key.");
+        $this->assertSame($owner, $foreignKey['foreign_table']);
+        $this->assertSame(['id'], $foreignKey['foreign_columns']);
+        $this->assertSame('cascade', $foreignKey['on_delete']);
+    }
+
+    public function test_the_plan_definition_tables_have_exactly_their_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'plan_version_id', 'key', 'driver', 'name', 'parameters', 'position', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_plan_components'),
+        );
+        $this->assertEqualsCanonicalizing(
+            ['id', 'plan_component_id', 'key', 'name', 'definition', 'position', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_plan_rules'),
+        );
+        $this->assertSame([['plan_version_id', 'key']], $this->uniqueIndexColumns('mlm_plan_components'));
+        $this->assertSame([['plan_component_id', 'key']], $this->uniqueIndexColumns('mlm_plan_rules'));
+
+        foreach (['mlm_plan_components', 'mlm_plan_rules'] as $table) {
+            $this->assertSame(['id'], collect(Schema::getIndexes($table))->firstWhere('primary', true)['columns'] ?? null);
+        }
+    }
+
+    public function test_a_database_at_000010_upgrades_without_touching_its_rows(): void
+    {
+        $migrations = array_map(
+            static fn (string $file): string => dirname(__DIR__).'/database/migrations/'.$file,
+            array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|10)_/', $file) === 1)),
+        );
+        $this->assertCount(10, $migrations);
+        $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
+        $this->assertFalse(Schema::hasTable('mlm_plan_components'));
+
+        $program = Program::factory()->create();
+        $plan = $program->plans()->create(['code' => 'MAIN', 'name' => 'Main']);
+        $before = [
+            DB::table('mlm_programs')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            DB::table('mlm_plans')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        ];
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertTrue(Schema::hasTable('mlm_plan_components'));
+        $this->assertTrue(Schema::hasTable('mlm_plan_rules'));
+        $this->assertSame(0, DB::table('mlm_plan_components')->count());
+        $this->assertSame($before, [
+            DB::table('mlm_programs')->get()->map(static fn (object $row): array => (array) $row)->all(),
+            DB::table('mlm_plans')->get()->map(static fn (object $row): array => (array) $row)->all(),
+        ]);
+        $this->assertTrue($plan->is(Plan::query()->sole()));
     }
 
     public function test_the_plan_version_status_defaults_to_draft(): void

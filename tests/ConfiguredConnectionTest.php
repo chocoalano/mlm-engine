@@ -5,18 +5,22 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests;
 
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\PlanComponent;
+use PandaBear\Mlm\Models\PlanRule;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
+use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 
 /**
@@ -27,11 +31,12 @@ use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
     use BuildsGenealogies;
+    use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class];
 
     protected function defineEnvironment($app): void
     {
@@ -197,6 +202,25 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame('20', $engine->resolve('sponsor.network.volume', new MetricContext($members['Alice'], ['type' => 'sales']))->value());
         $this->assertSame('7', $engine->resolve('placement.network.volume', new MetricContext($members['Alice'], ['type' => 'sales', 'max_depth' => 1]))->value());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_genealogy_paths'));
+    }
+
+    public function test_plan_definitions_are_edited_validated_and_cloned_on_the_configured_connection(): void
+    {
+        $version = $this->validDraft();
+        $component = $version->components()->sole();
+
+        $this->assertSame('mlm', $component->getConnectionName());
+        $this->assertSame('mlm', $component->rules()->sole()->getConnectionName());
+        $this->assertSame($this->qualifyingRule()->toArray(), $component->rules()->sole()->definition->toArray());
+
+        $validated = $this->lifecycle()->markValidated($version);
+        $clone = $this->cloner()->cloneToNewDraft($validated);
+
+        $this->assertSame($this->storedDefinition($validated), $this->storedDefinition($clone));
+        $this->assertDatabaseHas('mlm_plan_versions', ['id' => $clone->id, 'status' => 'draft', 'version' => 2], 'mlm');
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_components')->count());
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_rules')->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_components'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

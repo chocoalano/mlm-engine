@@ -11,6 +11,10 @@ use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
 use PandaBear\Mlm\Metrics\SponsorNetworkVolumeMetric;
+use PandaBear\Mlm\Planning\PlanComponentDriverRegistry;
+use PandaBear\Mlm\Planning\PlanDefinitionCloner;
+use PandaBear\Mlm\Planning\PlanDefinitionEditor;
+use PandaBear\Mlm\Planning\PlanDefinitionValidator;
 use PandaBear\Mlm\Support\PandaMlmConfig;
 
 final class PandaMlmServiceProvider extends ServiceProvider
@@ -37,6 +41,17 @@ final class PandaMlmServiceProvider extends ServiceProvider
 
             return $registry;
         });
+
+        // Shared for the same reason. No driver is built in yet: each business
+        // domain brings its own in its own phase; applications add theirs
+        // through register().
+        $this->app->singleton(PlanComponentDriverRegistry::class);
+
+        // Stateless services over the shared registries and the configured
+        // connection.
+        $this->app->singleton(PlanDefinitionValidator::class);
+        $this->app->singleton(PlanDefinitionEditor::class);
+        $this->app->singleton(PlanDefinitionCloner::class);
     }
 
     public function boot(): void
