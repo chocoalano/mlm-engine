@@ -318,6 +318,30 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         DB::connection('mlm')->transaction(fn () => $this->calculate($component, key: 'run:inside'));
     }
 
+    public function test_the_built_in_strategies_read_and_store_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'ALICE', 'BOB', 'CHARLIE');
+        $this->sponsorTree($members, ['ALICE' => ['BOB'], 'BOB' => ['CHARLIE']]);
+        $this->record($members['CHARLIE'], '150', 'order:A', at: CarbonImmutable::now()->addMinute());
+        $component = $this->commissionComponent(['strategy' => 'unilevel.fixed', 'parameters' => [
+            'volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '100',
+            'levels' => [['depth' => 1, 'amount' => '10'], ['depth' => 2, 'amount' => '5']],
+        ]], $plan);
+
+        // The default connection has no package tables: a read that left the
+        // calculation's connection would fail here.
+        $run = $this->calculate($component, CarbonImmutable::now()->subDay()->format('Y-m-d H:i:s'), CarbonImmutable::now()->addDay()->format('Y-m-d H:i:s'));
+
+        $this->assertSame('mlm', $run->getConnectionName());
+        $this->assertSame(
+            [$members['BOB']->id => '10', $members['ALICE']->id => '5'],
+            $run->commissions()->get()->mapWithKeys(static fn (Commission $commission): array => [$commission->member_id => $commission->amount->value()])->all(),
+        );
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_commissions')->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_volume_entries'));
+    }
+
     public function test_a_connection_set_on_the_model_still_wins(): void
     {
         foreach (self::MODELS as $model) {

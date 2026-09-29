@@ -9,6 +9,8 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
 use PandaBear\Mlm\Commission\CommissionComponentDriver;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
+use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
@@ -56,9 +58,15 @@ final class PandaMlmServiceProvider extends ServiceProvider
             return $registry;
         });
 
-        // Shared for the same reason. The package ships no strategy of its
-        // own: applications and later packages register theirs.
-        $this->app->singleton(CommissionStrategyRegistry::class);
+        // Shared for the same reason. The built-in strategies go through the
+        // same register() applications use for their own.
+        $this->app->singleton(CommissionStrategyRegistry::class, static function (Application $app): CommissionStrategyRegistry {
+            $registry = new CommissionStrategyRegistry;
+            $registry->register($app->make(DirectSponsorFixedStrategy::class));
+            $registry->register($app->make(UnilevelFixedStrategy::class));
+
+            return $registry;
+        });
 
         // Stateless services over the shared registries and the configured
         // connection.

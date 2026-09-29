@@ -25,6 +25,7 @@ use PandaBear\Mlm\Rank\RankContext;
 use PandaBear\Mlm\Rank\RankEngine;
 use PandaBear\Mlm\Volume\Quantity;
 use PandaBear\Mlm\Volume\RecordVolume;
+use PandaBear\Mlm\Volume\ReverseVolume;
 use PandaBear\Mlm\Volume\VolumeRecorder;
 use PHPUnit\Framework\Attributes\DataProvider;
 
@@ -440,6 +441,49 @@ final class MigrationTest extends TestCase
         }
 
         $this->assertSame($before, $this->rowsOf($tables));
+    }
+
+    public function test_commission_strategies_find_their_source_entries_by_an_index(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertContains(
+            ['program_id', 'type', 'source_type', 'effective_at'],
+            collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all(),
+        );
+    }
+
+    public function test_a_database_at_000018_gains_the_source_entry_index_without_touching_its_rows_and_can_lose_it_again(): void
+    {
+        $migrations = array_map(
+            static fn (string $file): string => dirname(__DIR__).'/database/migrations/'.$file,
+            array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-8])_/', $file) === 1)),
+        );
+        $this->assertCount(18, $migrations);
+        $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
+
+        $program = Program::factory()->create();
+        [$alice, $bob] = Member::factory()->for($program)->count(2)->create()->all();
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
+        $entry = $this->app->make(VolumeRecorder::class)->record(new RecordVolume($bob, 'sales', Quantity::of('150'), 'order', 'ORD-1', 'order:ORD-1', now()));
+        $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
+        $before = $this->rowsOf(self::TABLES_BEFORE_THE_LEDGER);
+        $columns = ['program_id', 'type', 'source_type', 'effective_at'];
+
+        $this->assertNotContains($columns, collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all());
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertContains($columns, collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all());
+        $this->assertSame($before, $this->rowsOf(self::TABLES_BEFORE_THE_LEDGER));
+
+        $this->artisan('migrate:rollback', [
+            '--path' => dirname(__DIR__).'/database/migrations/2026_09_28_000019_add_program_source_index_to_mlm_volume_entries.php',
+            '--realpath' => true,
+        ])->assertSuccessful();
+
+        $this->assertNotContains($columns, collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all());
+        $this->assertSame($before, $this->rowsOf(self::TABLES_BEFORE_THE_LEDGER));
     }
 
     public function test_posting_amounts_are_stored_as_whole_millionths_to_the_64_bit_limit(): void

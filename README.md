@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Concrete compensation strategies, rank persistence and promotion, payouts, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in fixed-award direct-sponsor and depth-based strategies; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Proportional commissions, rank persistence and promotion, payouts, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -646,13 +646,59 @@ $run = app(CalculationEngine::class)->calculate($component, new CalculationConte
 $run->commissions;                           // CALCULATED commissions, in candidate key order
 ```
 
-- **No concrete compensation strategy is built in yet.** The package ships the `commission.strategy` component and the registry; strategies are yours, or later packages'. There is no formula language: strategies are code, configured by versioned parameters and rules.
+- The package ships two strategies — `direct-sponsor.fixed` and `unilevel.fixed` (see [Built-in strategies](#built-in-strategies)) — and registers your own beside them. There is no formula language: strategies are code, configured by versioned parameters and rules.
 - The component's parameters are exactly `strategy`, `currency`, `source_account` and `parameters`. An unknown strategy, currency, account key or field blocks `markValidated()`.
 - The source account must already exist as a system account of the program in that currency — it is never created for you — and is fixed on the run.
 - **Only successful runs are stored**, whole: a failing strategy or any invalid candidate — zero or negative amount, too large for one posting, duplicate key, another program's member, a trace that is not inert JSON — stores nothing.
 - A calculation runs in its own transaction with one read snapshot, so every read of a strategy agrees; it refuses to start inside your transaction.
 - **Replaying an idempotency key returns the stored run without calculating again**, even if data changed; the same key with another component or range throws `ConflictingCalculationReplay`. A new calculation needs a new key.
 - Calculating moves no money, opens no wallet and approves nothing.
+
+## Built-in strategies
+
+Both pay a **fixed award per eligible original business entry**, to sponsors of the entry's member **as the sponsor line stood when the entry took effect**.
+
+```php
+$editor->addComponent($draft, key: 'direct-sponsor', driver: 'commission.strategy', name: 'Direct sponsor award', parameters: [
+    'strategy' => 'direct-sponsor.fixed',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',          // entries of this volume type...
+        'source_type' => 'order',          // ...from this source type...
+        'minimum_quantity' => '100',       // ...of at least this quantity
+        'amount' => '10',                  // paid to the direct sponsor, per entry
+    ],
+]);
+
+$editor->addComponent($draft, key: 'depth-awards', driver: 'commission.strategy', name: 'Depth awards', parameters: [
+    'strategy' => 'unilevel.fixed',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',
+        'source_type' => 'order',
+        'minimum_quantity' => '100',
+        'levels' => [
+            ['depth' => 1, 'amount' => '10'],   // the direct sponsor
+            ['depth' => 2, 'amount' => '5'],    // their sponsor
+            ['depth' => 4, 'amount' => '1'],    // depth 3 earns nothing
+        ],
+    ],
+]);
+
+$lifecycle->markValidated($draft);
+
+$run = app(CalculationEngine::class)->calculate($component, new CalculationContext($start, $end, 'direct-sponsor:2026-06'));
+```
+
+- **Fixed, not proportional.** The entry's quantity only makes it eligible; the award is the configured amount, whatever the quantity. There is no rate and no rounding yet.
+- **Eligible entries** are original volume entries of the run's program, of the configured volume and source types, effective in the run's range, with at least the minimum quantity (compared exactly; `0` admits every entry).
+- **Historical sponsors.** A sponsor assigned after the entry, or an upline joined above it later, earns nothing from it. The placement tree is never read.
+- **Depths are physical sponsor depths**: larger is further up. Only configured depths earn; there is no compression, and the order levels are listed in does not matter.
+- One commission per entry and depth, keyed `volume-entry:<entry id>:depth:<d>`, earned at the entry's moment, with a trace back to the entry and the sponsorship.
+- **Reversals as of the run's cutoff.** An entry reversed before the run's `until` earns nothing; a reversal at `until` or later belongs to a later range and changes nothing in this one. **A later reversal does not claw back** a commission already calculated or posted — that needs an adjustment policy that does not exist yet.
+- Neither strategy takes rules: a component with rules is refused rather than having them ignored.
 
 ## Commission core
 
@@ -695,7 +741,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: concrete compensation strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: proportional commissions and a financial rounding policy, commission clawback on later reversals, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, hybrid) and proportional depth-based commissions, performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

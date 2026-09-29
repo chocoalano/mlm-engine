@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.8.
+Accepted — Phase 2.8. Amended in Phase 2.9: the package now registers its first own strategies, `direct-sponsor.fixed` and `unilevel.fixed`, through the same registry (ADR-019); calculation runs are unchanged.
 
 ## Context
 

@@ -9,6 +9,8 @@ use PandaBear\Mlm\Commission\CommissionComponentDriver;
 use PandaBear\Mlm\Commission\CommissionStrategy;
 use PandaBear\Mlm\Commission\CommissionStrategyDefinition;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
+use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
 use PandaBear\Mlm\Exceptions\DuplicateCommissionStrategy;
 use PandaBear\Mlm\Exceptions\InvalidCommissionStrategy;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
@@ -37,11 +39,47 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
     use BuildsLedgers;
     use BuildsPlanDefinitions;
 
-    public function test_the_commission_component_is_built_in_and_no_strategy_is(): void
+    public function test_the_commission_component_and_the_fixed_strategies_are_built_in(): void
     {
+        $strategies = $this->app->make(CommissionStrategyRegistry::class);
+
         $this->assertInstanceOf(CommissionComponentDriver::class, $this->app->make(PlanComponentDriverRegistry::class)->get('commission.strategy'));
-        $this->assertSame([], $this->app->make(CommissionStrategyRegistry::class)->keys());
-        $this->assertSame($this->app->make(CommissionStrategyRegistry::class), $this->app->make(CommissionStrategyRegistry::class));
+        $this->assertSame(['direct-sponsor.fixed', 'unilevel.fixed'], $strategies->keys());
+        $this->assertInstanceOf(DirectSponsorFixedStrategy::class, $strategies->get('direct-sponsor.fixed'));
+        $this->assertInstanceOf(UnilevelFixedStrategy::class, $strategies->get('unilevel.fixed'));
+        $this->assertSame($strategies, $this->app->make(CommissionStrategyRegistry::class));
+
+        // A registry built by hand holds only what is registered into it.
+        $this->assertSame([], (new CommissionStrategyRegistry)->keys());
+    }
+
+    public function test_no_application_strategy_replaces_a_built_in_one(): void
+    {
+        $strategies = $this->app->make(CommissionStrategyRegistry::class);
+        $builtIn = $strategies->get('unilevel.fixed');
+        $impostor = new class implements CommissionStrategy
+        {
+            public function key(): string
+            {
+                return 'unilevel.fixed';
+            }
+
+            public function validate(CommissionStrategyDefinition $definition): void {}
+
+            public function calculate(CommissionCalculationContext $context): iterable
+            {
+                return [];
+            }
+        };
+
+        try {
+            $strategies->register($impostor);
+            $this->fail('An application strategy replaced a built-in one.');
+        } catch (DuplicateCommissionStrategy $exception) {
+            $this->assertStringContainsString('"unilevel.fixed" is already registered', $exception->getMessage());
+        }
+
+        $this->assertSame($builtIn, $strategies->get('unilevel.fixed'));
     }
 
     public function test_a_component_of_a_registered_strategy_validates_and_the_strategy_judges_it(): void
@@ -201,7 +239,7 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
 
         $this->app->register(ExampleStrategyServiceProvider::class);
 
-        $this->assertSame(['test.fixed'], $registry->keys());
+        $this->assertSame(['direct-sponsor.fixed', 'test.fixed', 'unilevel.fixed'], $registry->keys());
 
         $draft = $this->draft();
         $this->addCommissionComponent($draft, $this->commissionParameters());
