@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank persistence and promotion, commission, wallets and ledgers, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank persistence and promotion, commission, payouts, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -459,7 +459,7 @@ $totals->forMember($member, 'sales');                          // Quantity, reve
 $totals->forMember($member, 'sales', from: $june1, until: $july1);
 ```
 
-A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive); with both bounds, `from` must come before `until`. Totals cover the member's own entries only. **Network totals, running balances, commission and wallets are not implemented yet.**
+A range counts entries by `effective_at` from `from` (inclusive) to `until` (exclusive); with both bounds, `from` must come before `until`. Totals cover the member's own entries only. **Network totals and running balances are not implemented yet; money lives in the [financial ledger](#financial-ledger--wallet).**
 
 Raw query-builder or SQL writes to `mlm_volume_entries` bypass every rule above. The database backs only its local invariants — one entry per key and program, one reversal per entry, foreign keys.
 
@@ -528,6 +528,54 @@ public function register(): void
 
 Metrics only answer "what is the value"; qualification and rank build on them. Commission is not implemented.
 
+## Financial ledger & wallet
+
+Money lives in a double-entry ledger. A **wallet** is one member's money in one currency; a **system account** is a program's own account under a key it chooses. Both are ledger accounts, and value moves between them only as **balanced transactions**: signed postings, one per account, summing to exactly zero, in one currency.
+
+```php
+use PandaBear\Mlm\Finance\LedgerAccountManager;
+use PandaBear\Mlm\Finance\LedgerBalanceReader;
+use PandaBear\Mlm\Finance\LedgerPostingInput;
+use PandaBear\Mlm\Finance\LedgerRecorder;
+use PandaBear\Mlm\Finance\PostLedgerTransaction;
+use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
+use PandaBear\Mlm\Finance\WalletManager;
+
+$wallet = app(WalletManager::class)->open($member, 'IDR');     // opens it with its account, or returns it
+$clearing = app(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'adjustment.clearing');
+
+$transaction = app(LedgerRecorder::class)->post(new PostLedgerTransaction(
+    program: $program,
+    currency: 'IDR',
+    type: 'adjustment',
+    sourceType: 'manual',
+    sourceId: 'ADJ-1',
+    idempotencyKey: 'adjustment:ADJ-1',
+    occurredAt: now(),
+    postings: [
+        LedgerPostingInput::of($clearing, '-100'),
+        LedgerPostingInput::of($wallet->account, '100'),
+    ],
+));
+
+app(LedgerBalanceReader::class)->forWallet($wallet);           // FinancialAmount "100"
+
+app(LedgerRecorder::class)->reverse(new ReverseLedgerTransaction(
+    transaction: $transaction,
+    sourceType: 'manual',
+    sourceId: 'ADJ-1-REVERSAL',
+    idempotencyKey: 'reversal:ADJ-1',
+    occurredAt: now(),
+));                                                             // the wallet is back to "0"
+```
+
+- **Balances are derived.** No wallet or account stores a balance: `LedgerBalanceReader` sums the postings on every read, exactly, at any size. A balance may be negative — the ledger sets no floor; spending rules belong to the domains that spend.
+- **Transactions are immutable.** A correction is a reversal: a new transaction with every posting negated, under its own source, key and moment. The original is never changed, is reversed at most once, and a reversal is not reversed. Wallets, accounts, transactions and postings are read-only through Eloquent.
+- **Exact amounts.** `FinancialAmount` holds six decimal places, never rounds and never accepts a float. One posting holds at most 9,223,372,036,854.775807 either way, so it can always be reversed; a balance has no limit.
+- **Replays are safe.** A request under an idempotency key already used in the program returns the stored transaction if it is identical — postings in any order — and throws `ConflictingLedgerReplay` otherwise. A rejected request writes nothing.
+- Every account is read from the database: it must belong to the transaction's program and hold its currency. A currency is three uppercase letters; the package keeps no currency list.
+- **No commission engine and no payout yet**, and no transfer, withdrawal, pending balance, fee, tax or rounding policy: those are later phases that post through this ledger.
+
 ## Configuration
 
 `config/mlm.php` holds **technical** settings only — where the package stores, queues and caches. Business plan rules such as pairing ratios, matrix sizes, commission percentages and rank requirements will never live in this file; they belong to versioned plans in the database.
@@ -546,7 +594,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, calculation periods and runs, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, commissions and bonuses, wallets, ledger and payouts, and the Panda Panel screens for all of it.
+Planned, **not implemented**: persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, calculation periods and runs, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, commissions and bonuses, calculation runs, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

@@ -5,18 +5,26 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests\Database;
 
 use Illuminate\Support\Facades\DB;
+use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
+use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
+use PandaBear\Mlm\Finance\LedgerRecorder;
+use PandaBear\Mlm\Models\LedgerAccount;
+use PandaBear\Mlm\Models\LedgerPosting;
+use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Models\Wallet;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
+use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Tests\DatabaseTestCase;
 use PHPUnit\Framework\Attributes\Group;
@@ -41,6 +49,7 @@ use Throwable;
 final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 {
     use BuildsGenealogies;
+    use BuildsLedgers;
     use RecordsVolume;
 
     /**
@@ -383,6 +392,275 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
         $this->assertTrue($this->finish($holder)['ok']);
         $this->assertSame($reversal, DB::table('mlm_volume_entries')->where('reversal_of_id', $original->id)->value('id'));
+    }
+
+    public function test_racing_opens_of_one_wallet_open_it_once(): void
+    {
+        $member = Member::factory()->create();
+        $job = ['op' => 'wallet_open', 'member' => $member->id, 'currency' => 'IDR'];
+
+        $this->closeGate('mlm_wallets');
+        $first = $this->start($job);
+        $second = $this->start($job);
+        $this->awaitWaitingOn(['mlm_wallets', 'mlm_wallets']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+        $this->assertSame($a['id'], $b['id']);
+        $this->assertSame([1, 1], [DB::table('mlm_wallets')->count(), DB::table('mlm_ledger_accounts')->count()]);
+        $this->assertSame($a['id'], DB::table('mlm_ledger_accounts')->value('wallet_id'));
+    }
+
+    public function test_identical_ledger_posts_racing_post_one_transaction(): void
+    {
+        [$program, $clearing, $wallet] = $this->ledgerAccounts();
+        $job = $this->postJob($program, $clearing, $wallet, '100');
+
+        $this->closeGate('mlm_ledger_transactions');
+        $first = $this->start($job);
+        $second = $this->start($job);
+        $this->awaitWaitingOn(['mlm_ledger_transactions', 'mlm_ledger_transactions']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+        $this->assertSame($a['id'], $b['id']);
+        $this->assertSame([1, 2], [DB::table('mlm_ledger_transactions')->count(), DB::table('mlm_ledger_postings')->count()]);
+    }
+
+    public function test_conflicting_ledger_posts_racing_post_one_and_refuse_the_other(): void
+    {
+        [$program, $clearing, $wallet] = $this->ledgerAccounts();
+
+        $this->closeGate('mlm_ledger_transactions');
+        $first = $this->start($this->postJob($program, $clearing, $wallet, '100'));
+        $second = $this->start($this->postJob($program, $clearing, $wallet, '250.5'));
+        $this->awaitWaitingOn(['mlm_ledger_transactions', 'mlm_ledger_transactions']);
+
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused(
+            [$this->finish($first), $this->finish($second)],
+            ConflictingLedgerReplay::class,
+            'differs in postings',
+        );
+        $this->assertSame([1, 2], [DB::table('mlm_ledger_transactions')->count(), DB::table('mlm_ledger_postings')->count()]);
+        $this->assertSame('0', (string) DB::table('mlm_ledger_postings')->sum('amount_millionths'));
+    }
+
+    public function test_racing_reversals_of_one_ledger_transaction_reverse_it_once(): void
+    {
+        [$program, $clearing, $wallet] = $this->ledgerAccounts();
+        $original = $this->app->make(LedgerRecorder::class)->post($this->postCommand($program, [[$clearing, '-100'], [$wallet, '100']]));
+        $before = $this->ledgerRows();
+
+        $this->closeGate('mlm_ledger_transactions');
+        $first = $this->start($this->reverseLedgerJob($original, 'reversal:REV-1'));
+        $second = $this->start($this->reverseLedgerJob($original, 'reversal:REV-2'));
+        $this->awaitWaitingOn(['mlm_ledger_transactions', 'mlm_ledger_transactions']);
+
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused(
+            [$this->finish($first), $this->finish($second)],
+            InvalidLedgerReversal::class,
+            'already reversed',
+        );
+        $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('reversal_of_id', $original->id)->count());
+        $this->assertSame(4, DB::table('mlm_ledger_postings')->count());
+        $this->assertSame($before['mlm_ledger_transactions'], array_values(array_filter($this->ledgerRows()['mlm_ledger_transactions'], static fn (array $row): bool => $row['id'] === $original->id)));
+    }
+
+    public function test_a_ledger_race_lost_inside_a_callers_transaction_replays_the_winner(): void
+    {
+        [$program, $clearing, $wallet] = $this->ledgerAccounts();
+        $winner = (new LedgerTransaction)->newUniqueId();
+
+        // Another session posts the same command's transaction and holds it
+        // uncommitted until this session is waiting on it.
+        $holder = $this->start(['op' => 'hold_rows', 'rows' => [
+            ['mlm_ledger_transactions', [
+                'id' => $winner,
+                'program_id' => $program->id,
+                'currency' => 'IDR',
+                'type' => 'adjustment',
+                'source_type' => 'manual',
+                'source_id' => 'ADJ-1',
+                'idempotency_key' => 'adjustment:ADJ-1',
+                'occurred_at' => '2026-06-01 12:00:00',
+                'created_at' => '2026-06-01 12:00:00',
+                'updated_at' => '2026-06-01 12:00:00',
+            ]],
+            ...array_map(static fn (array $line): array => ['mlm_ledger_postings', [
+                'id' => (new LedgerPosting)->newUniqueId(),
+                'ledger_transaction_id' => $winner,
+                'ledger_account_id' => $line[0],
+                'amount_millionths' => $line[1],
+                'created_at' => '2026-06-01 12:00:00',
+                'updated_at' => '2026-06-01 12:00:00',
+            ]], [[$clearing->id, '-100000000'], [$wallet->id, '100000000']]),
+        ]]);
+        $this->awaitEvent($holder, 'held');
+
+        DB::beginTransaction();
+
+        try {
+            // Reads first — on MySQL that fixes this transaction's snapshot —
+            // then waits on the held key, loses to it, and must still see the
+            // winner's postings to recognise the replay.
+            $transaction = $this->app->make(LedgerRecorder::class)->post($this->postCommand($program, [[$wallet, '100'], [$clearing, '-100']]));
+
+            $this->assertSame(1, DB::table('mlm_programs')->where('id', $program->id)->count());
+
+            DB::commit();
+        } catch (Throwable $exception) {
+            DB::rollBack();
+
+            throw $exception;
+        }
+
+        $this->assertSame($winner, $transaction->id);
+        $this->assertTrue($this->finish($holder)['ok']);
+        $this->assertSame([1, 2], [DB::table('mlm_ledger_transactions')->count(), DB::table('mlm_ledger_postings')->count()]);
+    }
+
+    public function test_a_ledger_reversal_race_lost_inside_a_callers_transaction_is_refused_as_already_reversed(): void
+    {
+        [$program, $clearing, $wallet] = $this->ledgerAccounts();
+        $original = $this->app->make(LedgerRecorder::class)->post($this->postCommand($program, [[$clearing, '-100'], [$wallet, '100']]));
+        $reversal = (new LedgerTransaction)->newUniqueId();
+
+        $holder = $this->start(['op' => 'hold_rows', 'rows' => [
+            ['mlm_ledger_transactions', [
+                'id' => $reversal,
+                'program_id' => $program->id,
+                'currency' => 'IDR',
+                'type' => 'adjustment',
+                'source_type' => 'manual',
+                'source_id' => 'REV-1',
+                'idempotency_key' => 'reversal:REV-1',
+                'occurred_at' => '2026-06-15 12:00:00',
+                'reversal_of_id' => $original->id,
+                'created_at' => '2026-06-15 12:00:00',
+                'updated_at' => '2026-06-15 12:00:00',
+            ]],
+            ...array_map(static fn (array $line): array => ['mlm_ledger_postings', [
+                'id' => (new LedgerPosting)->newUniqueId(),
+                'ledger_transaction_id' => $reversal,
+                'ledger_account_id' => $line[0],
+                'amount_millionths' => $line[1],
+                'created_at' => '2026-06-15 12:00:00',
+                'updated_at' => '2026-06-15 12:00:00',
+            ]], [[$clearing->id, '100000000'], [$wallet->id, '-100000000']]),
+        ]]);
+        $this->awaitEvent($holder, 'held');
+
+        DB::beginTransaction();
+
+        try {
+            try {
+                $this->app->make(LedgerRecorder::class)->reverse($this->reverseCommand($original, 'reversal:REV-2', sourceId: 'REV-2'));
+                $this->fail('The transaction was reversed twice.');
+            } catch (InvalidLedgerReversal $exception) {
+                $this->assertStringContainsString("already reversed by transaction [{$reversal}]", $exception->getMessage());
+            }
+
+            $this->assertSame(1, DB::table('mlm_programs')->where('id', $program->id)->count());
+        } finally {
+            DB::rollBack();
+        }
+
+        $this->assertTrue($this->finish($holder)['ok']);
+        $this->assertSame($reversal, DB::table('mlm_ledger_transactions')->where('reversal_of_id', $original->id)->value('id'));
+    }
+
+    public function test_a_wallet_opened_by_another_session_is_usable_inside_a_callers_transaction(): void
+    {
+        $member = Member::factory()->create();
+        $clearing = $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'adjustment.clearing');
+        [$wallet, $account] = [(new Wallet)->newUniqueId(), (new LedgerAccount)->newUniqueId()];
+
+        $holder = $this->start(['op' => 'hold_rows', 'rows' => [
+            ['mlm_wallets', ['id' => $wallet, 'program_id' => $member->program_id, 'member_id' => $member->id, 'currency' => 'IDR', 'created_at' => '2026-06-01 12:00:00', 'updated_at' => '2026-06-01 12:00:00']],
+            ['mlm_ledger_accounts', ['id' => $account, 'program_id' => $member->program_id, 'wallet_id' => $wallet, 'currency' => 'IDR', 'key' => 'wallet.'.$wallet, 'created_at' => '2026-06-01 12:00:00', 'updated_at' => '2026-06-01 12:00:00']],
+        ]]);
+        $this->awaitEvent($holder, 'held');
+
+        DB::beginTransaction();
+
+        try {
+            // Loses the race to open the wallet, then posts to its account in
+            // the same transaction: on MySQL both rows are newer than this
+            // transaction's snapshot.
+            $opened = $this->wallets()->open($member, 'IDR');
+            $this->assertSame([$wallet, $account], [$opened->id, $opened->account?->id]);
+
+            $posted = $this->app->make(LedgerRecorder::class)->post($this->postCommand($member->program, [[$clearing, '-10'], [$opened->account, '10']]));
+
+            DB::commit();
+        } catch (Throwable $exception) {
+            DB::rollBack();
+
+            throw $exception;
+        }
+
+        $this->assertTrue($this->finish($holder)['ok']);
+        $this->assertSame(2, DB::table('mlm_ledger_postings')->where('ledger_transaction_id', $posted->id)->count());
+        $this->assertSame('10', $this->balances()->forAccount(LedgerAccount::query()->findOrFail($account))->value());
+    }
+
+    /**
+     * A program with a clearing account and one member's wallet account.
+     *
+     * @return array{Program, LedgerAccount, LedgerAccount}
+     */
+    private function ledgerAccounts(): array
+    {
+        $member = Member::factory()->create();
+
+        return [
+            $member->program,
+            $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'adjustment.clearing'),
+            $this->walletAccount($member),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function postJob(Program $program, LedgerAccount $clearing, LedgerAccount $wallet, string $amount): array
+    {
+        return [
+            'op' => 'ledger_post',
+            'program' => $program->id,
+            'currency' => 'IDR',
+            'type' => 'adjustment',
+            'source_type' => 'manual',
+            'source_id' => 'ADJ-1',
+            'key' => 'adjustment:ADJ-1',
+            'occurred_at' => '2026-06-01 12:00:00',
+            'postings' => [[$clearing->id, '-'.$amount], [$wallet->id, $amount]],
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function reverseLedgerJob(LedgerTransaction $transaction, string $key): array
+    {
+        return [
+            'op' => 'ledger_reverse',
+            'transaction' => $transaction->id,
+            'source_type' => 'manual',
+            'source_id' => $key,
+            'key' => $key,
+            'occurred_at' => '2026-06-15 12:00:00',
+        ];
     }
 
     /**

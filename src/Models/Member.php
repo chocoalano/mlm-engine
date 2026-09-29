@@ -6,8 +6,10 @@ namespace PandaBear\Mlm\Models;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use PandaBear\Mlm\Database\Factories\MemberFactory;
 use PandaBear\Mlm\Exceptions\InvalidExternalIdentity;
 
@@ -23,6 +25,7 @@ use PandaBear\Mlm\Exceptions\InvalidExternalIdentity;
  * @property string|null $external_id
  * @property CarbonImmutable $joined_at
  * @property-read Program $program
+ * @property-read Collection<int, Wallet> $wallets
  */
 final class Member extends MlmModel
 {
@@ -58,6 +61,16 @@ final class Member extends MlmModel
     public function program(): BelongsTo
     {
         return $this->belongsTo(Program::class);
+    }
+
+    /**
+     * At most one per currency.
+     *
+     * @return HasMany<Wallet, $this>
+     */
+    public function wallets(): HasMany
+    {
+        return $this->hasMany(Wallet::class);
     }
 
     /**

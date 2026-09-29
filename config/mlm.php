@@ -10,7 +10,7 @@ declare(strict_types=1);
 | Infrastructure only: where the package stores, queues and caches. Business
 | plan rules (pairing ratios, matrix width, commission percentages, rank
 | requirements) never belong here — they are versioned per plan in the
-| database, so two tenants can run two different plans.
+| database, so different programs can run different plans.
 |
 | A null connection or store means the application's default.
 |

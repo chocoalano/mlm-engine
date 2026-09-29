@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests;
 
 use Carbon\CarbonImmutable;
+use PandaBear\Mlm\Models\LedgerAccount;
+use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
+use PandaBear\Mlm\Models\Wallet;
+use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Volume\Quantity;
 use PandaBear\Mlm\Volume\RecordVolume;
@@ -18,6 +22,7 @@ use PandaBear\Mlm\Volume\RecordVolume;
  */
 final class IdentifierComparisonTest extends DatabaseTestCase
 {
+    use BuildsLedgers;
     use RecordsVolume;
 
     public function test_program_codes_are_compared_exactly(): void
@@ -65,5 +70,21 @@ final class IdentifierComparisonTest extends DatabaseTestCase
         $this->assertFalse($lower->is($upper));
         $this->assertSame('99', $lower->quantity->value());
         $this->assertSame('109', $this->totals()->forMember($member, 'sales')->value());
+    }
+
+    public function test_ledger_identifiers_and_currencies_are_compared_exactly(): void
+    {
+        $member = Member::factory()->create();
+        $wallet = $this->walletAccount($member);
+        $clearing = $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'adjustment.clearing');
+
+        $upper = $this->postLedger($member->program, [[$clearing, '-10'], [$wallet, '10']], 'ADJUSTMENT:ADJ-1', 'ADJ-1');
+        $lower = $this->postLedger($member->program, [[$clearing, '-99'], [$wallet, '99']], 'adjustment:adj-1', 'adj-1');
+
+        $this->assertFalse($lower->is($upper));
+        $this->assertSame('109', $this->balances()->forAccount($wallet)->value());
+        $this->assertSame(1, LedgerTransaction::query()->where('idempotency_key', 'adjustment:adj-1')->count());
+        $this->assertSame(0, Wallet::query()->where('currency', 'idr')->count());
+        $this->assertSame(0, LedgerAccount::query()->where('key', 'ADJUSTMENT.CLEARING')->count());
     }
 }

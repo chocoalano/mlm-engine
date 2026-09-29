@@ -16,15 +16,24 @@ declare(strict_types=1);
  *
  * The "hold" operation writes a volume entry in an open transaction, prints
  * {"event":"held"}, and commits only once another session is waiting on it.
+ * "hold_rows" does the same with rows of any tables, in the order given.
  */
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\Foundation\Application;
+use PandaBear\Mlm\Finance\LedgerPostingInput;
+use PandaBear\Mlm\Finance\LedgerRecorder;
+use PandaBear\Mlm\Finance\PostLedgerTransaction;
+use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
+use PandaBear\Mlm\Finance\WalletManager;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+use PandaBear\Mlm\Models\LedgerAccount;
+use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlanVersion;
+use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\PandaMlmServiceProvider;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
@@ -70,6 +79,23 @@ try {
         effectiveAt: CarbonImmutable::parse($job['effective_at']),
     );
 
+    // Commits only once another session is blocked on what it wrote.
+    $holdUntilWaitedOn = static function (Closure $write) use ($database, $emit): void {
+        DB::beginTransaction();
+        $write();
+        $emit(['event' => 'held']);
+
+        $deadline = microtime(true) + 20;
+        while (DB::select($database->waitingStatementsQuery()) === []) {
+            if (microtime(true) > $deadline) {
+                throw new RuntimeException('No session came to wait on the held rows.');
+            }
+            usleep(20_000);
+        }
+
+        DB::commit();
+    };
+
     $id = match ($job['op']) {
         'sponsor' => app(SponsorGenealogy::class)
             ->assignSponsor(Member::findOrFail($job['member']), Member::findOrFail($job['sponsor']))->getKey(),
@@ -86,6 +112,36 @@ try {
         'plan_add_component' => app(PlanDefinitionEditor::class)
             ->addComponent(PlanVersion::findOrFail($job['version']), $job['key'], $job['driver'], $job['name'])->getKey(),
         'plan_validate' => app(PlanVersionLifecycle::class)->markValidated(PlanVersion::findOrFail($job['version']))->getKey(),
+        'wallet_open' => app(WalletManager::class)->open(Member::findOrFail($job['member']), $job['currency'])->getKey(),
+        'ledger_post' => app(LedgerRecorder::class)->post(new PostLedgerTransaction(
+            program: Program::findOrFail($job['program']),
+            currency: $job['currency'],
+            type: $job['type'],
+            sourceType: $job['source_type'],
+            sourceId: $job['source_id'],
+            idempotencyKey: $job['key'],
+            occurredAt: CarbonImmutable::parse($job['occurred_at']),
+            postings: array_map(
+                static fn (array $line): LedgerPostingInput => LedgerPostingInput::of(LedgerAccount::findOrFail($line[0]), $line[1]),
+                $job['postings'],
+            ),
+        ))->getKey(),
+        'ledger_reverse' => app(LedgerRecorder::class)->reverse(new ReverseLedgerTransaction(
+            transaction: LedgerTransaction::findOrFail($job['transaction']),
+            sourceType: $job['source_type'],
+            sourceId: $job['source_id'],
+            idempotencyKey: $job['key'],
+            occurredAt: CarbonImmutable::parse($job['occurred_at']),
+        ))->getKey(),
+        'hold_rows' => (static function () use ($job, $holdUntilWaitedOn): string {
+            $holdUntilWaitedOn(static function () use ($job): void {
+                foreach ($job['rows'] as [$table, $row]) {
+                    DB::table($table)->insert($row);
+                }
+            });
+
+            return $job['rows'][0][1]['id'];
+        })(),
         'hold' => (static function () use ($job, $database, $emit): string {
             DB::beginTransaction();
             DB::table('mlm_volume_entries')->insert($job['row']);

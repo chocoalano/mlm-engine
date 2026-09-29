@@ -18,6 +18,7 @@ use PandaBear\Mlm\Database\Factories\ProgramFactory;
  * @property string $name
  * @property-read Collection<int, Member> $members
  * @property-read Collection<int, Plan> $plans
+ * @property-read Collection<int, Wallet> $wallets
  */
 final class Program extends MlmModel
 {
@@ -45,6 +46,14 @@ final class Program extends MlmModel
     public function plans(): HasMany
     {
         return $this->hasMany(Plan::class);
+    }
+
+    /**
+     * @return HasMany<Wallet, $this>
+     */
+    public function wallets(): HasMany
+    {
+        return $this->hasMany(Wallet::class);
     }
 
     protected static function newFactory(): ProgramFactory

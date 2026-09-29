@@ -9,6 +9,9 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\LedgerAccount;
+use PandaBear\Mlm\Models\LedgerPosting;
+use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
@@ -18,6 +21,7 @@ use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Models\Wallet;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Planning\Rules\MetricCondition;
 use PandaBear\Mlm\Planning\Rules\RuleDefinition;
@@ -26,6 +30,7 @@ use PandaBear\Mlm\Qualification\QualificationEngine;
 use PandaBear\Mlm\Rank\RankContext;
 use PandaBear\Mlm\Rank\RankEngine;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
+use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 
@@ -37,12 +42,13 @@ use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
     use BuildsGenealogies;
+    use BuildsLedgers;
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class];
 
     protected function defineEnvironment($app): void
     {
@@ -260,6 +266,30 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame('150', $decision->toArray()['ranks'][1]['trace']['children'][0]['value']);
         $this->assertSame(2, DB::connection('mlm')->table('mlm_plan_rules')->where('plan_component_id', $ladder->id)->count());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_plan_components'));
+    }
+
+    public function test_the_ledger_opens_posts_reverses_and_reads_on_the_configured_connection(): void
+    {
+        $member = Member::factory()->create();
+        $wallet = $this->wallets()->open($member, 'IDR');
+        $clearing = $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'adjustment.clearing');
+        $account = $wallet->account;
+        $this->assertNotNull($account);
+
+        $credit = $this->postLedger($member->program, [[$clearing, '-100'], [$account, '100']]);
+        $this->postLedger($member->program, [[$clearing, '-25.5'], [$account, '25.5']], 'adjustment:ADJ-2', 'ADJ-2');
+        $this->reverseLedger($credit);
+
+        $this->assertSame('mlm', $credit->getConnectionName());
+        $this->assertSame('25.5', $this->balances()->forWallet($wallet)->value());
+        $this->assertSame('-25.5', $this->balances()->forAccount($clearing)->value());
+        $this->assertSame([1, 2, 3, 6], [
+            DB::connection('mlm')->table('mlm_wallets')->count(),
+            DB::connection('mlm')->table('mlm_ledger_accounts')->count(),
+            DB::connection('mlm')->table('mlm_ledger_transactions')->count(),
+            DB::connection('mlm')->table('mlm_ledger_postings')->count(),
+        ]);
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_ledger_postings'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void
