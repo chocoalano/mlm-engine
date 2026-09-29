@@ -10,7 +10,9 @@ use Illuminate\Support\ServiceProvider;
 use PandaBear\Mlm\Commission\CommissionComponentDriver;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\DirectSponsorProportionalStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\UnilevelProportionalStrategy;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
@@ -63,7 +65,9 @@ final class PandaMlmServiceProvider extends ServiceProvider
         $this->app->singleton(CommissionStrategyRegistry::class, static function (Application $app): CommissionStrategyRegistry {
             $registry = new CommissionStrategyRegistry;
             $registry->register($app->make(DirectSponsorFixedStrategy::class));
+            $registry->register($app->make(DirectSponsorProportionalStrategy::class));
             $registry->register($app->make(UnilevelFixedStrategy::class));
+            $registry->register($app->make(UnilevelProportionalStrategy::class));
 
             return $registry;
         });

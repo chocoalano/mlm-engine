@@ -34,15 +34,7 @@ final class SourceEntryAward
             earnedAt: $entry->effective_at,
             trace: [
                 'strategy' => $strategy,
-                'source' => [
-                    'volume_entry_id' => (string) $entry->getKey(),
-                    'volume_type' => $entry->type,
-                    'source_type' => $entry->source_type,
-                    'source_id' => $entry->source_id,
-                    'member_id' => $entry->member_id,
-                    'quantity' => $entry->quantity->value(),
-                    'effective_at' => $entry->effective_at->format('Y-m-d H:i:s'),
-                ],
+                'source' => self::source($entry),
                 'minimum_quantity' => $filter->minimumQuantity->value(),
                 'recipient' => [
                     'member_id' => (string) $recipient->getKey(),
@@ -51,6 +43,24 @@ final class SourceEntryAward
                 'amount' => $amount->value(),
             ],
         );
+    }
+
+    /**
+     * The source entry, as a trace records it.
+     *
+     * @return array<string, string>
+     */
+    public static function source(VolumeEntry $entry): array
+    {
+        return [
+            'volume_entry_id' => (string) $entry->getKey(),
+            'volume_type' => $entry->type,
+            'source_type' => $entry->source_type,
+            'source_id' => $entry->source_id,
+            'member_id' => $entry->member_id,
+            'quantity' => $entry->quantity->value(),
+            'effective_at' => $entry->effective_at->format('Y-m-d H:i:s'),
+        ];
     }
 
     public static function key(VolumeEntry $entry, int $depth): string

@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.9.
+Accepted — Phase 2.9. Amended in Phase 3.0: proportional siblings, `direct-sponsor.proportional` and `unilevel.proportional`, share this eligibility and attribution (ADR-020); the fixed strategies' semantics are unchanged.
 
 ## Context
 

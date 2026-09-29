@@ -10,7 +10,9 @@ use PandaBear\Mlm\Commission\CommissionStrategy;
 use PandaBear\Mlm\Commission\CommissionStrategyDefinition;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\DirectSponsorProportionalStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\UnilevelProportionalStrategy;
 use PandaBear\Mlm\Exceptions\DuplicateCommissionStrategy;
 use PandaBear\Mlm\Exceptions\InvalidCommissionStrategy;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
@@ -39,14 +41,16 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
     use BuildsLedgers;
     use BuildsPlanDefinitions;
 
-    public function test_the_commission_component_and_the_fixed_strategies_are_built_in(): void
+    public function test_the_commission_component_and_the_sponsor_strategies_are_built_in(): void
     {
         $strategies = $this->app->make(CommissionStrategyRegistry::class);
 
         $this->assertInstanceOf(CommissionComponentDriver::class, $this->app->make(PlanComponentDriverRegistry::class)->get('commission.strategy'));
-        $this->assertSame(['direct-sponsor.fixed', 'unilevel.fixed'], $strategies->keys());
+        $this->assertSame(['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'], $strategies->keys());
         $this->assertInstanceOf(DirectSponsorFixedStrategy::class, $strategies->get('direct-sponsor.fixed'));
+        $this->assertInstanceOf(DirectSponsorProportionalStrategy::class, $strategies->get('direct-sponsor.proportional'));
         $this->assertInstanceOf(UnilevelFixedStrategy::class, $strategies->get('unilevel.fixed'));
+        $this->assertInstanceOf(UnilevelProportionalStrategy::class, $strategies->get('unilevel.proportional'));
         $this->assertSame($strategies, $this->app->make(CommissionStrategyRegistry::class));
 
         // A registry built by hand holds only what is registered into it.
@@ -239,7 +243,7 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
 
         $this->app->register(ExampleStrategyServiceProvider::class);
 
-        $this->assertSame(['direct-sponsor.fixed', 'test.fixed', 'unilevel.fixed'], $registry->keys());
+        $this->assertSame(['direct-sponsor.fixed', 'direct-sponsor.proportional', 'test.fixed', 'unilevel.fixed', 'unilevel.proportional'], $registry->keys());
 
         $draft = $this->draft();
         $this->addCommissionComponent($draft, $this->commissionParameters());

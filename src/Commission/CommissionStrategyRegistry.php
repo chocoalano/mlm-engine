@@ -15,8 +15,9 @@ use PandaBear\Mlm\Planning\DefinitionInput;
  *
  * Bound as an application singleton: its registrations are configuration,
  * made once while the application boots. The package registers its own
- * `direct-sponsor.fixed` and `unilevel.fixed`; an application or package adds
- * its own from a service provider:
+ * `direct-sponsor.fixed`, `direct-sponsor.proportional`, `unilevel.fixed` and
+ * `unilevel.proportional`; an application or package adds its own from a
+ * service provider:
  *
  *   $this->callAfterResolving(CommissionStrategyRegistry::class, function (CommissionStrategyRegistry $strategies): void {
  *       $strategies->register(new AcmeReferralStrategy);

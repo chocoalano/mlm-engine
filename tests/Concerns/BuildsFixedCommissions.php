@@ -15,7 +15,7 @@ use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\Rules\RuleDefinition;
 
 /**
- * Components of the built-in fixed-award strategies, and the history they
+ * Components of the built-in sponsor strategies, and the history they
  * read — sponsorships and business entries at chosen moments — built the
  * supported way.
  *
@@ -44,6 +44,31 @@ trait BuildsFixedCommissions
             'source_type' => 'order',
             'minimum_quantity' => '100',
             'levels' => [['depth' => 1, 'amount' => '10'], ['depth' => 2, 'amount' => '5'], ['depth' => 3, 'amount' => '2']],
+            ...$overrides,
+        ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    protected function directProportionalParameters(array $overrides = []): array
+    {
+        return ['volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '1', 'unit_amount' => '1.25', 'rounding' => 'half_even', ...$overrides];
+    }
+
+    /**
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    protected function unilevelProportionalParameters(array $overrides = []): array
+    {
+        return [
+            'volume_type' => 'sales',
+            'source_type' => 'order',
+            'minimum_quantity' => '1',
+            'rounding' => 'half_even',
+            'levels' => [['depth' => 1, 'unit_amount' => '2'], ['depth' => 2, 'unit_amount' => '1.5'], ['depth' => 3, 'unit_amount' => '0.25']],
             ...$overrides,
         ];
     }

@@ -342,6 +342,26 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_volume_entries'));
     }
 
+    public function test_the_proportional_strategies_read_and_store_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'ALICE', 'BOB');
+        $this->sponsorTree($members, ['ALICE' => ['BOB']]);
+        $this->record($members['BOB'], '1.234567', 'order:A', at: CarbonImmutable::now()->addMinute());
+        $component = $this->commissionComponent(['strategy' => 'direct-sponsor.proportional', 'parameters' => [
+            'volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '0', 'unit_amount' => '2.345678', 'rounding' => 'half_up',
+        ]], $plan);
+
+        // The default connection has no package tables: a read that left the
+        // calculation's connection would fail here.
+        $run = $this->calculate($component, CarbonImmutable::now()->subDay()->format('Y-m-d H:i:s'), CarbonImmutable::now()->addDay()->format('Y-m-d H:i:s'));
+        $commission = $run->commissions()->sole();
+
+        $this->assertSame(['mlm', $members['ALICE']->id, '2.895897'], [$commission->getConnectionName(), $commission->member_id, $commission->amount->value()]);
+        $this->assertSame('2.895896651426', $commission->trace['calculation']['exact_amount']);
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commissions'));
+    }
+
     public function test_a_connection_set_on_the_model_still_wins(): void
     {
         foreach (self::MODELS as $model) {
