@@ -11,6 +11,7 @@ use PandaBear\Mlm\Commission\CommissionStatus;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
+use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
@@ -257,6 +258,66 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
         $this->assertSame($edge->id, $position->placement_edge_id);
         $this->assertBinaryTreeConsistent();
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function pairingRaces(): array
+    {
+        return [
+            'the same range under two keys' => ['2026-01-01 00:00:00', '2026-02-01 00:00:00', 'jan:b'],
+            'the next range' => ['2026-02-01 00:00:00', '2026-03-01 00:00:00', 'feb'],
+            'the same range under the same key' => ['2026-01-01 00:00:00', '2026-02-01 00:00:00', 'jan'],
+        ];
+    }
+
+    /**
+     * Two binary pairing runs of one component, the second started while
+     * the first holds its state uncommitted: serialized, the second either
+     * replays the first, continues from it, or is refused as stale — carry
+     * is never consumed twice.
+     */
+    #[DataProvider('pairingRaces')]
+    public function test_racing_pairing_runs_of_one_component_never_consume_carry_twice(string $from, string $until, string $key): void
+    {
+        $component = $this->pairingRace();
+
+        $this->closeGate('mlm_binary_pairing_results');
+        $first = $this->start(['op' => 'calculate', 'component' => $component->id, 'from' => '2026-01-01 00:00:00', 'until' => '2026-02-01 00:00:00', 'key' => 'jan']);
+        $this->awaitWaitingOn(['mlm_binary_pairing_results']);
+        $second = $this->start(['op' => 'calculate', 'component' => $component->id, 'from' => $from, 'until' => $until, 'key' => $key]);
+        $this->awaitWaitingOn(['mlm_binary_pairing_results', 'mlm_']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $shown = json_encode([$a, $b], JSON_THROW_ON_ERROR);
+        $this->assertTrue($a['ok'], $shown);
+        $january = CalculationRun::query()->where('idempotency_key', 'jan')->sole();
+
+        match ($key) {
+            'jan' => $this->assertSame([true, $a['id']], [$b['ok'], $b['id']], $shown),
+            'feb' => $this->assertTrue($b['ok'], $shown),
+            default => $this->assertSame([false, InvalidBinaryPairingRange::class], [$b['ok'], $b['exception'] ?? null], $shown),
+        };
+
+        // January paired once: one lot drawn per side, one commission.
+        $this->assertSame(['1'], DB::table('mlm_binary_pairing_results')->where('calculation_run_id', $january->id)->pluck('pair_count')->all());
+        $this->assertSame(2, DB::table('mlm_binary_pairing_allocations')->whereIn('binary_pairing_result_id', DB::table('mlm_binary_pairing_results')->where('calculation_run_id', $january->id)->select('id'))->count());
+        $this->assertSame(1, DB::table('mlm_binary_pairing_cursors')->count());
+
+        if ($key === 'feb') {
+            // February started from January's carry.
+            $february = DB::table('mlm_binary_pairing_results')->where('calculation_run_id', $b['id'])->sole();
+            $this->assertSame(['150', '20', '1', '50', '100'], [$february->left_carry_before, $february->right_carry_before, $february->pair_count, $february->left_carry_after, $february->right_carry_after]);
+            $this->assertSame('2026-03-01 00:00:00', (string) DB::table('mlm_binary_pairing_cursors')->value('through_at'));
+        } else {
+            $this->assertSame([1, 1, 2], [DB::table('mlm_calculation_runs')->count(), DB::table('mlm_commissions')->count(), DB::table('mlm_binary_carry_lots')->count()]);
+            $this->assertSame('2026-02-01 00:00:00', (string) DB::table('mlm_binary_pairing_cursors')->value('through_at'));
+        }
+
+        fwrite(STDERR, sprintf("[pairing race %s] %s => %s\n", ExternalDatabase::selected()?->engine ?? '?', $key, $b['ok'] ? 'ok' : $b['exception']));
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -935,6 +996,25 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
     /**
      * @return array<string, mixed>
      */
+    /**
+     * A binary pairing component over P, with L on its left and R on its
+     * right: January brings 250 left and 120 right, February 180 right.
+     */
+    private function pairingRace(): PlanComponent
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'P', 'L', 'R');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['L'], $members['P'], BinarySide::Left);
+        $this->binary()->place($members['R'], $members['P'], BinarySide::Right);
+        $this->travelBack();
+        $this->sale($members['L'], '250', '2026-01-10', 'l1');
+        $this->sale($members['R'], '120', '2026-01-11', 'r1');
+        $this->sale($members['R'], '180', '2026-02-11', 'r2');
+
+        return $this->fixedComponent('binary.pairing.fixed', ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10'], $plan);
+    }
+
     private function calculateJob(PlanComponent $component, string $until): array
     {
         return ['op' => 'calculate', 'component' => $component->id, 'from' => '2026-06-01 00:00:00', 'until' => $until, 'key' => 'run:2026-06'];

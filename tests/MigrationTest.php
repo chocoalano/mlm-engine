@@ -42,7 +42,9 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
+
+    private const PAIRING_TABLES = ['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
 
     private const BUILT_IN_STRATEGIES = ['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'];
 
@@ -283,6 +285,21 @@ final class MigrationTest extends TestCase
             'an adjustment names its ledger reversal' => ['mlm_commission_adjustments', 'ledger_transaction_id', 'mlm_ledger_transactions'],
             'a binary position enrols a placement edge' => ['mlm_binary_placement_positions', 'placement_edge_id', 'mlm_placement_edges'],
             'a binary position names its parent' => ['mlm_binary_placement_positions', 'parent_id', 'mlm_members'],
+            'a pairing cursor belongs to a program' => ['mlm_binary_pairing_cursors', 'program_id', 'mlm_programs'],
+            'a pairing cursor belongs to its component' => ['mlm_binary_pairing_cursors', 'plan_component_id', 'mlm_plan_components'],
+            'a pairing cursor names its last run' => ['mlm_binary_pairing_cursors', 'last_calculation_run_id', 'mlm_calculation_runs'],
+            'a carry lot belongs to a program' => ['mlm_binary_carry_lots', 'program_id', 'mlm_programs'],
+            'a carry lot belongs to its component' => ['mlm_binary_carry_lots', 'plan_component_id', 'mlm_plan_components'],
+            'a carry lot belongs to its binary member' => ['mlm_binary_carry_lots', 'member_id', 'mlm_members'],
+            'a carry lot names its source entry' => ['mlm_binary_carry_lots', 'source_volume_entry_id', 'mlm_volume_entries'],
+            'a carry lot names the reversal that took it back' => ['mlm_binary_carry_lots', 'reversed_by_volume_entry_id', 'mlm_volume_entries'],
+            'a pairing result belongs to its run' => ['mlm_binary_pairing_results', 'calculation_run_id', 'mlm_calculation_runs'],
+            'a pairing result belongs to a program' => ['mlm_binary_pairing_results', 'program_id', 'mlm_programs'],
+            'a pairing result belongs to its component' => ['mlm_binary_pairing_results', 'plan_component_id', 'mlm_plan_components'],
+            'a pairing result belongs to its binary member' => ['mlm_binary_pairing_results', 'member_id', 'mlm_members'],
+            'a pairing result names its commission' => ['mlm_binary_pairing_results', 'commission_id', 'mlm_commissions'],
+            'an allocation belongs to its result' => ['mlm_binary_pairing_allocations', 'binary_pairing_result_id', 'mlm_binary_pairing_results'],
+            'an allocation draws on a carry lot' => ['mlm_binary_pairing_allocations', 'binary_carry_lot_id', 'mlm_binary_carry_lots'],
         ];
     }
 
@@ -650,6 +667,90 @@ final class MigrationTest extends TestCase
         }
     }
 
+    public function test_binary_pairing_state_has_exactly_its_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'plan_component_id', 'started_at', 'through_at', 'last_calculation_run_id', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_pairing_cursors'),
+        );
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'plan_component_id', 'member_id', 'side', 'source_volume_entry_id', 'source_effective_at', 'quantity_millionths', 'remaining_millionths', 'reversed_by_volume_entry_id', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_carry_lots'),
+        );
+        $this->assertEqualsCanonicalizing(
+            [
+                'id', 'calculation_run_id', 'program_id', 'plan_component_id', 'member_id',
+                'left_carry_before', 'right_carry_before', 'left_added', 'right_added', 'left_reversed', 'right_reversed', 'left_available', 'right_available',
+                'pair_quantity', 'pair_count', 'consumed_quantity', 'left_carry_after', 'right_carry_after', 'commission_id', 'created_at', 'updated_at',
+            ],
+            Schema::getColumnListing('mlm_binary_pairing_results'),
+        );
+        $this->assertEqualsCanonicalizing(
+            ['id', 'binary_pairing_result_id', 'binary_carry_lot_id', 'side', 'quantity_millionths', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_pairing_allocations'),
+        );
+
+        $this->assertSame([['plan_component_id']], $this->uniqueIndexColumns('mlm_binary_pairing_cursors'));
+        $this->assertSame([['plan_component_id', 'member_id', 'source_volume_entry_id']], $this->uniqueIndexColumns('mlm_binary_carry_lots'));
+        $this->assertEqualsCanonicalizing([['calculation_run_id', 'member_id'], ['commission_id']], $this->uniqueIndexColumns('mlm_binary_pairing_results'));
+        $this->assertSame([['binary_pairing_result_id', 'binary_carry_lot_id']], $this->uniqueIndexColumns('mlm_binary_pairing_allocations'));
+
+        // Open carry, by member side and by component; a source entry's lots; a lot's draws.
+        $this->assertContains(['plan_component_id', 'member_id', 'side', 'remaining_millionths'], collect(Schema::getIndexes('mlm_binary_carry_lots'))->pluck('columns')->all());
+        $this->assertContains(['plan_component_id', 'remaining_millionths', 'member_id', 'side', 'program_id'], collect(Schema::getIndexes('mlm_binary_carry_lots'))->pluck('columns')->all());
+        $this->assertContains(['source_volume_entry_id'], collect(Schema::getIndexes('mlm_binary_carry_lots'))->pluck('columns')->all());
+        $this->assertContains(['binary_carry_lot_id'], collect(Schema::getIndexes('mlm_binary_pairing_allocations'))->pluck('columns')->all());
+
+        // One entry's quantity in an integer column; sums in exact text.
+        foreach (['mlm_binary_carry_lots' => ['quantity_millionths', 'remaining_millionths'], 'mlm_binary_pairing_allocations' => ['quantity_millionths']] as $table => $columns) {
+            foreach ($columns as $column) {
+                $this->assertStringContainsStringIgnoringCase('int', collect(Schema::getColumns($table))->firstWhere('name', $column)['type_name'] ?? '', "{$table}.{$column}");
+            }
+        }
+
+        foreach (['left_carry_before', 'pair_count', 'consumed_quantity', 'right_carry_after'] as $column) {
+            $this->assertStringContainsStringIgnoringCase('text', collect(Schema::getColumns('mlm_binary_pairing_results'))->firstWhere('name', $column)['type_name'] ?? '', $column);
+        }
+
+        if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            foreach (['mlm_binary_carry_lots', 'mlm_binary_pairing_allocations'] as $table) {
+                $this->assertSame('utf8mb4_bin', collect(Schema::getColumns($table))->firstWhere('name', 'side')['collation'] ?? null, $table);
+            }
+        }
+    }
+
+    public function test_a_database_at_000022_gains_empty_binary_pairing_state_and_can_lose_it_again(): void
+    {
+        // Everything the package wrote before binary pairing: genealogies, a
+        // binary tree, volume, a plan and commissions.
+        [$entry] = $this->legacyCommissions();
+        $this->artisan('migrate', ['--path' => [$this->migration('000020'), $this->migration('000021'), $this->migration('000022')], '--realpath' => true])->assertSuccessful();
+        $bob = Member::query()->findOrFail($entry->member_id);
+        $alice = Member::query()->whereKeyNot($bob->id)->sole();
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
+        $this->app->make(BinaryPlacementManager::class)->place($bob, $alice, BinarySide::Left);
+        $tables = array_values(array_diff(self::TABLES, self::PAIRING_TABLES));
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        // No carry is made up for history: the tables start empty.
+        foreach (self::PAIRING_TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+
+        $this->assertSame($rows, $this->rowsOf($tables));
+
+        $this->artisan('migrate:rollback')->assertSuccessful();
+
+        $this->assertSame($rows, $this->rowsOf($tables));
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame(22, DB::table('migrations')->count());
+    }
+
     public function test_a_database_at_000021_gains_an_empty_binary_overlay_and_can_lose_it_again(): void
     {
         // Everything the package wrote before binary placement: genealogies,
@@ -665,11 +766,11 @@ final class MigrationTest extends TestCase
         $reversal = $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
         $this->assertSame(4, $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal)->count());
         $this->assertFalse(Schema::hasTable('mlm_binary_placement_positions'));
-        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions']));
+        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions', ...self::PAIRING_TABLES]));
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
-        $this->artisan('migrate')->assertSuccessful();
+        $this->artisan('migrate', ['--path' => $this->migration('000022'), '--realpath' => true])->assertSuccessful();
 
         // Nothing is guessed into the overlay: every edge stays generic-only.
         $this->assertSame(0, DB::table('mlm_binary_placement_positions')->count());

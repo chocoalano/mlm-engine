@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.8. Amended in Phase 2.9: the package now registers its first own strategies, `direct-sponsor.fixed` and `unilevel.fixed`, through the same registry (ADR-019); calculation runs are unchanged. Amended in Phase 3.1: run results stay immutable; a later source correction is a `CommissionAdjustment` plus the commission's lifecycle or ledger reversal (ADR-021).
+Accepted — Phase 2.8. Amended in Phase 2.9: the package now registers its first own strategies, `direct-sponsor.fixed` and `unilevel.fixed`, through the same registry (ADR-019); calculation runs are unchanged. Amended in Phase 3.1: run results stay immutable; a later source correction is a `CommissionAdjustment` plus the commission's lifecycle or ledger reversal (ADR-021). Amended in Phase 3.3: the engine also supports optional, trusted state transitions from `StatefulCommissionStrategy`, committed atomically with a successful run in a serializable, retried transaction, and never on replay (ADR-023); stateless runs are unchanged.
 
 ## Context
 

@@ -13,6 +13,7 @@ use PandaBear\Mlm\Commission\CommissionComponentParameters;
 use PandaBear\Mlm\Commission\CommissionStatus;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Commission\CommissionTrace;
+use PandaBear\Mlm\Commission\StatefulCommissionStrategy;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Exceptions\InvalidCommissionCandidate;
@@ -48,6 +49,11 @@ use PandaBear\Mlm\Planning\PlanVersionStatus;
  *   candidate is checked before anything is written: the run and all its
  *   commissions, CALCULATED, are stored together, or nothing is. A stored
  *   run is a successful one.
+ * - A stateful strategy (ADR-023) calculates instead in a serializable
+ *   transaction, retried when the database asks, and the state transition
+ *   it returns is applied after the run and its commissions are stored, in
+ *   the same transaction. A replay applies nothing. The engine knows no
+ *   strategy's state; only the transition does.
  *
  * It opens no wallet, approves nothing and moves no money.
  */
@@ -83,6 +89,20 @@ final readonly class CalculationEngine
             return $this->replay($existing, $request, $context);
         }
 
+        if ($this->stateful($request)) {
+            return StatefulCalculationTransaction::run($db, function () use ($db, $component, $context): CalculationRun {
+                $request = $this->load($db, (string) $component->getKey());
+
+                // A retried attempt, or one that waited for another run under
+                // the same key: the stored run stands, and its state with it.
+                $existing = $this->findByKey($db, $request, $context);
+
+                return $existing !== null
+                    ? $this->replay($existing, $request, $context)
+                    : $this->run($db, $request, $context);
+            });
+        }
+
         try {
             return ReadSnapshot::run($db, fn (): CalculationRun => $this->run($db, $this->load($db, (string) $component->getKey()), $context));
         } catch (UniqueConstraintViolationException $exception) {
@@ -108,15 +128,38 @@ final readonly class CalculationEngine
             throw InvalidCalculationRun::invalidDefinition($request->where, $exception);
         }
 
-        $candidates = $this->candidates($db, $request->program, $strategy->calculate(new CommissionCalculationContext(
+        $calculation = new CommissionCalculationContext(
             program: $request->program,
             definition: $definition,
             from: $context->from,
             until: $context->until,
             connection: (string) $db->getName(),
-        )));
+            planComponentId: (string) $request->component->getKey(),
+        );
 
-        return $this->insert($db, $request, $context, $candidates);
+        if (! $strategy instanceof StatefulCommissionStrategy) {
+            return $this->insert($db, $request, $context, $this->candidates($db, $request->program, $strategy->calculate($calculation)));
+        }
+
+        $stateful = $strategy->calculateStateful($calculation);
+        $run = $this->insert($db, $request, $context, $this->candidates($db, $request->program, $stateful->candidates));
+
+        // Every candidate was checked and the run stored first: the state
+        // moves with a complete run, and only with one.
+        $stateful->transition->apply($db, $run);
+
+        return $run;
+    }
+
+    /**
+     * Whether the component's strategy keeps state between runs. An unknown
+     * strategy is refused inside the calculation, as ever.
+     */
+    private function stateful(CalculationRequest $request): bool
+    {
+        $key = $request->parameters->strategy;
+
+        return $this->strategies->has($key) && $this->strategies->get($key) instanceof StatefulCommissionStrategy;
     }
 
     /**

@@ -13,6 +13,10 @@ use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\BinaryCarryLot;
+use PandaBear\Mlm\Models\BinaryPairingAllocation;
+use PandaBear\Mlm\Models\BinaryPairingCursor;
+use PandaBear\Mlm\Models\BinaryPairingResult;
 use PandaBear\Mlm\Models\BinaryPlacementPosition;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
@@ -38,6 +42,7 @@ use PandaBear\Mlm\Qualification\QualificationEngine;
 use PandaBear\Mlm\Rank\RankContext;
 use PandaBear\Mlm\Rank\RankEngine;
 use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
+use PandaBear\Mlm\Tests\Concerns\BuildsFixedCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
@@ -51,14 +56,15 @@ use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
     use BuildsCommissions;
+    use BuildsFixedCommissions;
     use BuildsGenealogies;
     use BuildsLedgers;
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class];
 
     protected function defineEnvironment($app): void
     {
@@ -204,6 +210,32 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame('21', $engine->resolve('binary.left.volume', new MetricContext($members['Alice'], ['type' => 'sales']))->value());
         $this->assertSame('7', $engine->resolve('binary.right.volume', new MetricContext($members['Alice'], ['type' => 'sales', 'max_depth' => 1]))->value());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_binary_placement_positions'));
+    }
+
+    public function test_binary_pairing_reads_and_keeps_its_state_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'Alice', 'Bob', 'Charlie');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['Bob'], $members['Alice'], BinarySide::Left);
+        $this->binary()->place($members['Charlie'], $members['Alice'], BinarySide::Right);
+        $this->travelBack();
+        $component = $this->fixedComponent('binary.pairing.fixed', ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10'], $plan);
+        $this->sale($members['Bob'], '250', '2026-01-10', 'order:ORD-1');
+        $this->sale($members['Charlie'], '120', '2026-01-10', 'order:ORD-2');
+
+        // Everything exists only on [mlm]: a read or write on the default
+        // connection would fail, not find nothing.
+        $run = $this->monthly($component, '2026-01');
+        $this->sale($members['Charlie'], '180', '2026-02-10', 'order:ORD-3');
+        $this->monthly($component, '2026-02');
+
+        $this->assertSame('10', $run->commissions()->sole()->amount->value());
+        $this->assertSame(['1', '1'], BinaryPairingResult::query()->orderBy('calculation_run_id')->pluck('pair_count')->all());
+        $this->assertSame(3, DB::connection('mlm')->table('mlm_binary_carry_lots')->count());
+        $this->assertSame(5, BinaryPairingAllocation::query()->count());
+        $this->assertSame('2026-03-01 00:00:00', BinaryPairingCursor::query()->sole()->through_at->format('Y-m-d H:i:s'));
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_binary_carry_lots'));
     }
 
     public function test_volume_is_recorded_reversed_and_totalled_on_the_configured_connection(): void

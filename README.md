@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor and depth-based strategies, fixed or proportional with explicit rounding, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, binary pairing and carry commissions, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based and binary pairing strategies, fixed or proportional with explicit rounding, binary carry kept source by source, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, correction of binary pairs whose source is reversed, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -440,7 +440,7 @@ $binary->descendantsAt($parent, CarbonImmutable::parse('2026-06-01 00:00:00'));
 - Binary never reads or writes sponsorship. There is one binary tree per program; several independent binary trees in one program are not supported yet.
 - Positions are written only by `BinaryPlacementManager`. A stored position that disagrees with its placement edge is refused with `CorruptBinaryPlacement` rather than read.
 
-Existing placements are **not** adopted by the migration: the package cannot know which should be left, right or not binary at all. **Binary pairing, carry-forward and binary commissions are not implemented yet.**
+Existing placements are **not** adopted by the migration: the package cannot know which should be left, right or not binary at all. Pairing commissions on this structure are described in [Binary pairing & carry](#binary-pairing--carry).
 
 ## Volume
 
@@ -570,7 +570,7 @@ app(MetricEngine::class)->resolve('binary.left.volume', new MetricContext(
 - A reversal follows the activity it reverses, into the same leg or into none, and appears in the period of its own `effective_at`. An activity and its reversal in one period net out.
 - Both are plan-configurable: a rule, and so a qualification or rank ladder, can use them.
 
-These are structural figures: pairing, carry and binary commissions are later work.
+These are structural figures; for pairing commissions and carry, see [Binary pairing & carry](#binary-pairing--carry).
 
 ### Your own metrics
 
@@ -817,6 +817,48 @@ A quantity and a `unit_amount` each have up to six decimal places, so their prod
 - Each commission's trace records `quantity`, `unit_amount`, the unrounded `exact_amount`, `rounding`, whether it was `rounded`, and the final `amount`.
 - A later reversal is clawed back by the stored, already-rounded amount — never recalculated.
 
+## Binary pairing & carry
+
+Two built-in strategies pay on the [binary legs](#binary-placement-foundation). A **pair** takes the same `pair_quantity` from the left and the right leg of a member; what cannot pair yet is **carried** to the component's next run.
+
+```php
+// A fixed amount for every whole pair.
+$editor->addComponent($draft, key: 'binary', driver: 'commission.strategy', name: 'Binary pairing', parameters: [
+    'strategy' => 'binary.pairing.fixed',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',
+        'pair_quantity' => '100',
+        'amount_per_pair' => '10',
+    ],
+]);
+
+// Or: the quantity the pairs consumed, times an amount per unit, rounded once.
+$editor->addComponent($draft, key: 'binary', driver: 'commission.strategy', name: 'Binary pairing', parameters: [
+    'strategy' => 'binary.pairing.proportional',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',
+        'pair_quantity' => '100',
+        'unit_amount' => '0.1',
+        'rounding' => 'half_even',
+    ],
+]);
+
+$engine->calculate($component, new CalculationContext($january1, $february1, 'binary:2026-01'));
+$engine->calculate($component, new CalculationContext($february1, $march1, 'binary:2026-02'));
+```
+
+- **Pairing at the run's close.** A run takes in every original entry of the volume type effective in its range, then pairs once per binary member: available = carry + added − reversed on each side; pairs = ⌊min(left, right) ÷ `pair_quantity`⌋, a whole number of any size; each side gives up pairs × `pair_quantity`. With 250 left and 120 right and a pair quantity of 100: one pair, carry 150 and 20. `pair_quantity` is exact and may be fractional (`2.5`).
+- **The award.** Fixed: pairs × `amount_per_pair`, exactly. Proportional: consumed quantity × `unit_amount`, rounded by the explicit mode ([Proportional commission math](#proportional-commission-math)). At most one commission per member and run, keyed `binary-pairing:<member id>`, **earned at the run's `until`**, CALCULATED like every commission, with a trace of the pairing and carry. A proportional award that rounds to zero creates no commission, but its pairs still consume carry and are recorded. An award larger than one ledger posting fails the run.
+- **Left/right carry, source by source.** Carry is kept as FIFO **lots**: one original entry, in one side of one member's legs, with its quantity and what remains unpaired. The side is the binary tree's at the entry's own moment: generic-only placement, later adoption and the sponsor tree play no part, and a member's own activity is never in its own legs. Pairs consume the oldest source first, and every draw is recorded as an allocation, so a commission leads back to the entries it was paid on. Each run records a pairing result per member: carry before, added, reversed, available, pairs, consumed and carry after.
+- **State belongs to the plan component.** The first run starts the component's state at its `from`; each later run must start exactly where the last ended — an overlapping, repeated or gapped range is refused with `InvalidBinaryPairingRange`, and the same idempotency key replays the stored run without touching state. A **new plan version starts with no carry**; the old version's component keeps its own. Nothing is carried between versions automatically.
+- **Atomic, serializable runs.** The run, its commissions and its carry changes are committed together or not at all, in a serializable transaction retried when the database reports a conflict: two runs of one component never consume the same carry. Calling a pairing strategy's `calculate()` directly only previews; authoritative results go through `CalculationEngine`.
+- **Reversals.** An entry reversed before its run ends never pairs. A reversal of unpaired carry takes that carry back. A reversal of carry that was **already paired** stops the run with `BinaryPairingCorrectionRequired` and changes nothing: correcting paid binary pairs is not implemented yet. Binary pairing commissions carry no single `volume-entry` provenance, and the clawback of [Commission adjustments](#commission-adjustments--source-reversal-clawback) does not apply to them.
+- No rules, carry expiry, pair caps or automatic placement yet.
+
 ## Commission core
 
 A commission is reviewed, then posted to the member's wallet through the ledger:
@@ -882,7 +924,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, binary pairing and carry-forward state, binary commissions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, binary reversal correction, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

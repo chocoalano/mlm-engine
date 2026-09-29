@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.2.
+Accepted — Phase 3.2. Amended in Phase 3.3: the binary structure now feeds stateful pairing (ADR-023), attributed exactly as the leg metrics attribute; the structure's own semantics are unchanged.
 
 ## Context
 

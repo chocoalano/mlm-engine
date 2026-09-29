@@ -46,7 +46,7 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
         $strategies = $this->app->make(CommissionStrategyRegistry::class);
 
         $this->assertInstanceOf(CommissionComponentDriver::class, $this->app->make(PlanComponentDriverRegistry::class)->get('commission.strategy'));
-        $this->assertSame(['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'], $strategies->keys());
+        $this->assertSame(['binary.pairing.fixed', 'binary.pairing.proportional', 'direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'], $strategies->keys());
         $this->assertInstanceOf(DirectSponsorFixedStrategy::class, $strategies->get('direct-sponsor.fixed'));
         $this->assertInstanceOf(DirectSponsorProportionalStrategy::class, $strategies->get('direct-sponsor.proportional'));
         $this->assertInstanceOf(UnilevelFixedStrategy::class, $strategies->get('unilevel.fixed'));
@@ -243,7 +243,7 @@ final class CommissionComponentDriverTest extends DatabaseTestCase
 
         $this->app->register(ExampleStrategyServiceProvider::class);
 
-        $this->assertSame(['direct-sponsor.fixed', 'direct-sponsor.proportional', 'test.fixed', 'unilevel.fixed', 'unilevel.proportional'], $registry->keys());
+        $this->assertSame(['binary.pairing.fixed', 'binary.pairing.proportional', 'direct-sponsor.fixed', 'direct-sponsor.proportional', 'test.fixed', 'unilevel.fixed', 'unilevel.proportional'], $registry->keys());
 
         $draft = $this->draft();
         $this->addCommissionComponent($draft, $this->commissionParameters());

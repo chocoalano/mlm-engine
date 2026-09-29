@@ -36,6 +36,7 @@ use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
  * @property-read PlanComponent $component
  * @property-read LedgerAccount $sourceAccount
  * @property-read Collection<int, Commission> $commissions
+ * @property-read Collection<int, BinaryPairingResult> $binaryPairingResults
  */
 final class CalculationRun extends MlmModel
 {
@@ -97,6 +98,17 @@ final class CalculationRun extends MlmModel
     public function commissions(): HasMany
     {
         return $this->hasMany(Commission::class)->orderBy('candidate_key');
+    }
+
+    /**
+     * What a binary pairing run did for each binary member (ADR-023), by
+     * member.
+     *
+     * @return HasMany<BinaryPairingResult, $this>
+     */
+    public function binaryPairingResults(): HasMany
+    {
+        return $this->hasMany(BinaryPairingResult::class)->orderBy('member_id');
     }
 
     protected static function booted(): void
