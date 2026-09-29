@@ -26,6 +26,9 @@ use PandaBear\Mlm\Finance\FinancialAmount;
  * What was calculated never changes. Its status moves through
  * `CommissionLifecycle` — pending, approved, or cancelled before posting —
  * and `CommissionPoster`, which alone posts it to the ledger and reverses it.
+ * `posted_amount` is what posting moved to the wallet: its net entitlement
+ * then (ADR-026) — the calculated amount less any binary correction recorded
+ * before it was posted. Null until it is posted.
  * Read-only through Eloquent. Raw query-builder writes bypass this and are
  * not a supported way to keep its invariants.
  *
@@ -37,6 +40,8 @@ use PandaBear\Mlm\Finance\FinancialAmount;
  * @property string $currency
  * @property int $amount_millionths
  * @property-read FinancialAmount $amount
+ * @property int|null $posted_amount_millionths
+ * @property-read FinancialAmount|null $postedAmount
  * @property CarbonImmutable $earned_at
  * @property-read array<array-key, mixed> $trace
  * @property CommissionStatus $status
@@ -72,6 +77,7 @@ final class Commission extends MlmModel
     {
         return [
             'amount_millionths' => 'integer',
+            'posted_amount_millionths' => 'integer',
             'earned_at' => 'immutable_datetime',
             'status' => CommissionStatus::class,
             'pending_at' => 'immutable_datetime',
@@ -91,6 +97,20 @@ final class Commission extends MlmModel
     {
         return Attribute::get(
             static fn (mixed $value, array $attributes): FinancialAmount => FinancialAmount::fromMillionths($attributes['amount_millionths']),
+        );
+    }
+
+    /**
+     * What posting moved to the wallet, exactly; null until it is posted.
+     *
+     * @return Attribute<FinancialAmount|null, never>
+     */
+    protected function postedAmount(): Attribute
+    {
+        return Attribute::get(
+            static fn (mixed $value, array $attributes): ?FinancialAmount => ($attributes['posted_amount_millionths'] ?? null) === null
+                ? null
+                : FinancialAmount::fromMillionths($attributes['posted_amount_millionths']),
         );
     }
 

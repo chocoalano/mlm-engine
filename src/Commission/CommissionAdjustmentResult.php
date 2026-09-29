@@ -7,10 +7,12 @@ namespace PandaBear\Mlm\Commission;
 use PandaBear\Mlm\Models\CommissionAdjustment;
 
 /**
- * The corrections one source reversal has led to so far: one adjustment per
- * commission linked to its original entry, in commission id order —
- * including those an earlier call made. A later call may find more, if a
- * calculation has since found commissions for that entry.
+ * The corrections one reversal has led to so far: one adjustment per
+ * commission linked to its original entry — or, for a binary reversal, per
+ * commission of a pairing it undid — in commission id order, including
+ * those an earlier call made. A later call may find more, once a
+ * calculation has found commissions for that entry, or a pairing run has
+ * recorded what the reversal undid.
  */
 final readonly class CommissionAdjustmentResult
 {

@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based and binary pairing strategies, fixed or proportional with explicit rounding, binary carry kept source by source, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, financial correction of binary commissions whose pairs were undone, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based and binary pairing strategies, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -856,7 +856,7 @@ $engine->calculate($component, new CalculationContext($february1, $march1, 'bina
 - **Left/right carry, source by source.** Carry is kept as FIFO **lots**: one original entry, in one side of one member's legs, with its quantity and what remains unpaired. The side is the binary tree's at the entry's own moment: generic-only placement, later adoption and the sponsor tree play no part, and a member's own activity is never in its own legs. Pairs consume the oldest source first, and every draw is recorded as an allocation, so a commission leads back to the entries it was paid on. Each run records a pairing result per member: carry before, added, reversed, available, pairs, consumed and carry after.
 - **State belongs to the plan component.** The first run starts the component's state at its `from`; each later run must start exactly where the last ended — an overlapping, repeated or gapped range is refused with `InvalidBinaryPairingRange`, and the same idempotency key replays the stored run without touching state. A **new plan version starts with no carry**; the old version's component keeps its own. Nothing is carried between versions automatically.
 - **Atomic, serializable runs.** The run, its commissions and its carry changes are committed together or not at all, in a serializable transaction retried when the database reports a conflict: two runs of one component never consume the same carry. Calling a pairing strategy's `calculate()` directly only previews; authoritative results go through `CalculationEngine`.
-- **Reversals.** An entry reversed before its run ends never pairs. A reversal of unpaired carry takes that carry back. A reversal of carry that was **already paired** is corrected in the run its moment falls in: the source's remaining carry is taken back, the pairs it fed are undone, and the same quantity returns to the other side's carry — newest source first — where it can pair again. Results record it as `left_restored`/`right_restored`; earlier results, allocations and commissions never change, and an immutable journal (`BinaryPairingCorrection`, `BinaryPairingRestoration`) explains the correction. Commissions of undone pairs are **not** corrected yet. `BinaryReversalImpactAnalyzer::analyze($reversal)` shows, read-only, what a reversal reaches — allocated, invalidated, restored and net consumed quantity per lot, with the pairing results, runs and commissions involved.
+- **Reversals.** An entry reversed before its run ends never pairs. A reversal of unpaired carry takes that carry back. A reversal of carry that was **already paired** is corrected in the run its moment falls in: the source's remaining carry is taken back, the pairs it fed are undone, and the same quantity returns to the other side's carry — newest source first — where it can pair again. Results record it as `left_restored`/`right_restored`; earlier results, allocations and commissions never change, and an immutable journal (`BinaryPairingCorrection`, `BinaryPairingRestoration`) explains the correction. The commissions of undone pairs are then corrected financially by an explicit call — see [Binary reversal correction](#binary-reversal-correction). `BinaryReversalImpactAnalyzer::analyze($reversal)` shows, read-only, what a reversal reaches — allocated, invalidated, restored and net consumed quantity per lot, with the pairing results, runs and commissions involved.
 - No rules, carry expiry, pair caps or automatic placement yet.
 
 ## Commission core
@@ -877,8 +877,9 @@ $commission = app(CommissionPoster::class)->reverse($commission, now());   // RE
 ```
 
 - `CALCULATED → PENDING → APPROVED → POSTED → REVERSED`, and `CANCELLED` from any status before `POSTED`. Nothing else: approval is explicit, and posting a commission that is not approved is refused. One commission at a time.
-- **Posting moves money only through the ledger**: one balanced transaction debiting the run's source account and crediting the member's wallet — opened if need be — by exactly the commission's amount, occurring when it was earned. Posting again returns the commission and moves nothing.
-- **Reversal** reverses that ledger transaction at the moment you give; the original is untouched, and a commission is reversed once.
+- **Posting moves money only through the ledger**: one balanced transaction debiting the run's source account and crediting the member's wallet — opened if need be — occurring when it was earned. It moves the commission's **net amount**: its calculated amount less any binary correction recorded before posting — the whole amount when there is none — and records it as `posted_amount` (`$commission->postedAmount`). Posting again returns the commission and moves nothing.
+- A commission a binary reversal has partly undone is **not posted** until that correction is processed (`UnresolvedBinaryCorrection`), and one with nothing left to post is never posted for zero.
+- **Reversal** reverses that ledger transaction — exactly what was posted — at the moment you give; the original is untouched, and a commission is reversed once. A commission already partly corrected through the ledger is not reversed whole.
 - What was calculated — member, amount, currency, earned-at, trace — never changes, and runs and commissions are read-only through Eloquent.
 - Held, available and paid statuses, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
 
@@ -906,6 +907,44 @@ $result->count(CommissionAdjustmentOutcome::Reversed);
 - **Provenance.** The built-in source-entry strategies record `source_type = volume-entry` and the entry's id on each commission; the trace stays audit output and is not the lookup. Your own strategy opts in by passing `source: CommissionSourceReference::volumeEntry($entry)` to a candidate earned wholly from that entry. Commissions created before provenance existed are given it by the migration.
 - Recording volume never triggers this: call it where your application reverses volume.
 
+## Binary reversal correction
+
+A binary commission is earned from many sources on both legs, so a reversal of one of them undoes only **part** of it. The correction happens in three explicit steps, and nothing already recorded is rewritten:
+
+```php
+use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
+
+// January: P's left leg sells 30 and 70, the right leg 100. One pair of 100
+// pays 100; the commission is approved and posted.
+$january = $calculationEngine->calculate($binaryComponent, new CalculationContext($january1, $february1, 'binary:2026-01'));
+$commission = $poster->post($lifecycle->approve($lifecycle->markPending($january->commissions->first())));
+
+// February 5: the 30 sale is refunded.
+$reversal = $volumeRecorder->reverse(new ReverseVolume(entry: $sale30, sourceType: 'refund', sourceId: 'RF-1', idempotencyKey: 'refund:RF-1', effectiveAt: $february5));
+
+// The run the reversal falls in corrects binary carry and pairing: the 30
+// is taken back, 30 of January's pair is undone, and the right side gets 30
+// of carry back. January's run, results, allocations and commission stay
+// as they were; a journal records the correction.
+$calculationEngine->calculate($binaryComponent, new CalculationContext($february1, $march1, 'binary:2026-02'));
+
+// The financial correction: 30 of the 100 paired was undone, so 30 of the
+// 100 paid comes back — here from the wallet, since it was posted.
+$result = app(CommissionAdjustmentEngine::class)->processBinaryReversal($reversal);
+
+$result->adjustments[0]->amount;      // FinancialAmount -30
+$result->adjustments[0]->outcome;     // CommissionAdjustmentOutcome::Adjusted
+```
+
+- **The share.** With A the commission's stored amount, Q the quantity its pairing consumed and I the quantity reversals have undone of it, everything undone through a reversal is worth ⌊A × I ÷ Q⌋ financial millionths; the reversal's correction is that less what the reversals before it (by moment, then id) were worth. So corrections never add up to more than A, and exactly to A once the whole pairing is undone — three reversals of a third of 100 correct 33.333333, 33.333333 and 33.333334. The strategy is never run again: a fixed commission is not re-counted in whole pairs, and a proportional one is corrected from its rounded stored amount.
+- **Before posting** (CALCULATED, PENDING, APPROVED): the correction is `recorded` and moves no money; posting later pays what is left, and records it as `posted_amount`. When nothing is left, the commission is `cancelled`.
+- **After posting**: part of it moves back from the wallet to the run's source account in a ledger transaction of its own — `adjusted` — and the commission stays POSTED, its original posting untouched. When a correction leaves nothing and none has moved money back before, the posting is reversed — `reversed`. When an earlier correction already moved part back, the rest moves back the same way, and the original is never reversed as well. The wallet may go negative.
+- **CANCELLED or REVERSED** commissions are left as they are: `already_cancelled`, `already_reversed`.
+- One `CommissionAdjustment` per commission and reversal — source `binary-volume-reversal` — even when the share is **zero** (under a millionth): the reversal is then known to be processed. A pairing whose award rounded to nothing has no commission and needs no adjustment.
+- **Call it after the pairing run.** Called before the run has taken the reversal in, it finds nothing and fakes nothing; calling again later finds the correction. Calling it again returns the same adjustments and moves nothing. One call corrects everything it finds, or nothing, and two calls — or a call and a post — racing on one commission serialize safely.
+- **Posting waits for it.** A commission with a binary correction not yet processed is refused by `CommissionPoster::post()` with `UnresolvedBinaryCorrection`, so a stale binary commission is never paid by accident.
+- The calculation engine never touches the ledger: the financial step is yours to orchestrate and retry.
+
 ## Configuration
 
 `config/mlm.php` holds **technical** settings only — where the package stores, queues and caches. Business plan rules such as pairing ratios, matrix sizes, commission percentages and rank requirements will never live in this file; they belong to versioned plans in the database.
@@ -924,7 +963,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, financial correction of undone binary pairs, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 
@@ -959,7 +998,7 @@ composer test:pgsql
 
 `composer test:mysql` and `composer test:pgsql` set `MLM_TEST_DATABASE` to `mysql` or `pgsql` for you. The database user needs to create and drop tables there. On MySQL the concurrency tests also read `performance_schema.data_lock_waits` and `performance_schema.threads` to see which sessions are waiting on a lock.
 
-Tests in the `concurrency` group run package operations in separate PHP processes, each with its own database session, and check how they interleave: racing cycle checks, sponsor against placement writes, and racing volume records and reversals. They are skipped on SQLite. To run only them:
+Tests in the `concurrency` group run package operations in separate PHP processes, each with its own database session, and check how they interleave: racing cycle checks, sponsor against placement writes, racing volume records and reversals, pairing runs, commission posts and clawbacks — binary corrections included. They are skipped on SQLite. To run only them:
 
 ```bash
 composer test:mysql -- --group concurrency

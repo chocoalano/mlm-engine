@@ -6,19 +6,17 @@ namespace PandaBear\Mlm\Commission;
 
 use DateTimeInterface;
 use Illuminate\Database\Connection;
+use PandaBear\Mlm\Exceptions\InvalidCommissionAdjustment;
 use PandaBear\Mlm\Exceptions\InvalidCommissionPosting;
 use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
+use PandaBear\Mlm\Exceptions\UnresolvedBinaryCorrection;
 use PandaBear\Mlm\Finance\FinanceInput;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
 use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Finance\PostLedgerTransaction;
 use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
-use PandaBear\Mlm\Finance\WalletManager;
-use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
-use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
-use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
 
 /**
@@ -26,9 +24,15 @@ use PandaBear\Mlm\Models\Program;
  *
  * `post()` moves an APPROVED commission into its member's wallet: one
  * balanced ledger transaction — the run's source account debited, the
- * wallet's account credited, by the commission's amount — occurring when
- * the commission was earned. `reverse()` undoes a POSTED one with the
- * ledger's reversal, at a moment the caller gives.
+ * wallet's account credited — occurring when the commission was earned.
+ * It moves the commission's net amount (ADR-026): what was calculated, less
+ * the binary corrections recorded before posting — the whole amount when
+ * there are none — and records it as the commission's `posted_amount`. A
+ * commission whose binary pairing a reversal has partly undone is not
+ * posted until that correction's financial share is recorded
+ * (`UnresolvedBinaryCorrection`), and one with nothing left to post is not
+ * posted at all. `reverse()` undoes a POSTED one with the ledger's reversal
+ * — exactly what was posted — at a moment the caller gives.
  *
  * Each is one transaction with the status change: the commission row is
  * locked, the ledger written through `LedgerRecorder`, and the status moved,
@@ -44,12 +48,15 @@ final readonly class CommissionPoster
 
     public function __construct(
         private LedgerRecorder $ledger,
-        private WalletManager $wallets,
+        private CommissionAccounts $accounts,
+        private CommissionNetAmount $net,
     ) {}
 
     /**
      * @throws InvalidCommissionTransition unless the commission is APPROVED, or already POSTED
-     * @throws InvalidCommissionPosting for a POSTED commission whose ledger transaction does not match it
+     * @throws UnresolvedBinaryCorrection while a binary correction of it has no financial adjustment
+     * @throws InvalidCommissionPosting for a POSTED commission whose ledger transaction does not match it, or an APPROVED one with nothing left to post
+     * @throws InvalidCommissionAdjustment when its stored adjustments leave it out of range
      */
     public function post(Commission $commission): Commission
     {
@@ -68,7 +75,15 @@ final readonly class CommissionPoster
                 throw InvalidCommissionTransition::from($current, CommissionStatus::Posted);
             }
 
-            [$source, $wallet] = $this->accounts($db, $current);
+            $this->assertNoUnresolvedCorrection($db, $current);
+
+            $amount = $this->net->of($current);
+
+            if ($amount->isZero()) {
+                throw InvalidCommissionPosting::nothingToPost($current);
+            }
+
+            [$source, $wallet] = $this->accounts->of($db, $current);
 
             $transaction = $this->ledger->post(new PostLedgerTransaction(
                 program: Program::on($db->getName())->findOrFail($current->program_id),
@@ -79,20 +94,21 @@ final readonly class CommissionPoster
                 idempotencyKey: self::postingKey($current),
                 occurredAt: $current->earned_at,
                 postings: [
-                    LedgerPostingInput::of($source, $current->amount->negate()),
-                    LedgerPostingInput::of($wallet, $current->amount),
+                    LedgerPostingInput::of($source, $amount->negate()),
+                    LedgerPostingInput::of($wallet, $amount),
                 ],
             ));
 
             return CommissionStatusWriter::move($db, $current, CommissionStatus::Posted, $current->freshTimestamp(), [
                 'ledger_transaction_id' => $transaction->getKey(),
+                'posted_amount_millionths' => $amount->toMillionths(),
             ]);
         });
     }
 
     /**
      * @throws InvalidCommissionTransition unless the commission is POSTED, or already REVERSED
-     * @throws InvalidCommissionPosting for a REVERSED commission reversed at another moment
+     * @throws InvalidCommissionPosting for a REVERSED commission reversed at another moment, or a POSTED one already partly corrected through the ledger
      */
     public function reverse(Commission $commission, DateTimeInterface $occurredAt): Commission
     {
@@ -117,6 +133,18 @@ final readonly class CommissionPoster
             }
 
             $original = $this->assertPosted($db, $current);
+
+            // Part of its money already went back through a correction of
+            // its own: reversing the whole posting would take back more than
+            // the member still holds of it.
+            $partlyAdjusted = $db->table('mlm_commission_adjustments')
+                ->where('commission_id', $current->getKey())
+                ->where('outcome', CommissionAdjustmentOutcome::Adjusted->value)
+                ->exists();
+
+            if ($partlyAdjusted) {
+                throw InvalidCommissionPosting::partlyAdjusted($current);
+            }
 
             $reversal = $this->ledger->reverse(new ReverseLedgerTransaction(
                 transaction: $original,
@@ -163,25 +191,44 @@ final readonly class CommissionPoster
     }
 
     /**
-     * The run's source account, and the account of the member's wallet in
-     * the commission's currency — opened if need be.
-     *
-     * @return array{LedgerAccount, LedgerAccount}
+     * Refuses an approved commission while a binary correction of its
+     * pairing (ADR-025) has no financial adjustment: posting it would pay
+     * what the pairing no longer earns.
      */
-    private function accounts(Connection $db, Commission $commission): array
+    private function assertNoUnresolvedCorrection(Connection $db, Commission $commission): void
     {
-        $run = CalculationRun::on($db->getName())->findOrFail($commission->calculation_run_id);
-        $source = LedgerAccount::on($db->getName())->findOrFail($run->source_ledger_account_id);
-        $wallet = $this->wallets->open(Member::on($db->getName())->findOrFail($commission->member_id), $commission->currency);
-        $account = $wallet->relationLoaded('account') ? $wallet->account : null;
+        $reversals = $db->table('mlm_binary_pairing_corrections')
+            ->where('commission_id', $commission->getKey())
+            ->distinct()
+            ->pluck('reversal_volume_entry_id')
+            ->map(static fn (mixed $id): string => (string) $id)
+            ->all();
 
-        return [$source, $account ?? LedgerAccount::on($db->getName())->where('wallet_id', $wallet->getKey())->firstOrFail()];
+        if ($reversals === []) {
+            return;
+        }
+
+        $resolved = $db->table('mlm_commission_adjustments')
+            ->where('commission_id', $commission->getKey())
+            ->where('type', CommissionAdjustmentEngine::CLAWBACK)
+            ->where('source_type', CommissionAdjustmentEngine::BINARY_VOLUME_REVERSAL)
+            ->pluck('source_id')
+            ->map(static fn (mixed $id): string => (string) $id)
+            ->all();
+
+        $unresolved = array_values(array_diff($reversals, $resolved));
+
+        if ($unresolved !== []) {
+            sort($unresolved, SORT_STRING);
+
+            throw UnresolvedBinaryCorrection::beforePosting($commission, $unresolved);
+        }
     }
 
     /**
      * The commission's ledger transaction, if it is exactly the one posting
      * it: the commission's own identity, source debited and wallet credited
-     * by its amount.
+     * by the amount it records as posted.
      */
     private function assertPosted(Connection $db, Commission $commission): LedgerTransaction
     {
@@ -193,10 +240,16 @@ final readonly class CommissionPoster
             throw InvalidCommissionPosting::inconsistent($commission, 'its ledger transaction is missing.');
         }
 
-        [$source, $wallet] = $this->accounts($db, $commission);
+        $posted = $commission->postedAmount;
+
+        if ($posted === null) {
+            throw InvalidCommissionPosting::inconsistent($commission, 'it records no posted amount.');
+        }
+
+        [$source, $wallet] = $this->accounts->of($db, $commission);
         $expected = [
-            (string) $source->getKey() => $commission->amount->negate()->toMillionths(),
-            (string) $wallet->getKey() => $commission->amount->toMillionths(),
+            (string) $source->getKey() => $posted->negate()->toMillionths(),
+            (string) $wallet->getKey() => $posted->toMillionths(),
         ];
         ksort($expected, SORT_STRING);
 

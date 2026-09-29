@@ -7,8 +7,10 @@ namespace PandaBear\Mlm\Tests;
 use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Support\Facades\DB;
+use PandaBear\Mlm\Binary\Correction\BinaryFinancialCorrectionAllocator;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
+use PandaBear\Mlm\Commission\CommissionAdjustmentPoster;
 use PandaBear\Mlm\Commission\CommissionAdjustmentResult;
 use PandaBear\Mlm\Commission\CommissionLifecycle;
 use PandaBear\Mlm\Commission\CommissionPoster;
@@ -442,11 +444,13 @@ final class CommissionAdjustmentEngineTest extends DatabaseTestCase
 
         // No genealogy, strategy, plan, conversion or ledger writer: a
         // correction recalculates nothing and moves money only through the
-        // commission's own services.
+        // commission's own services. The binary share is read from what is
+        // stored, by an allocator that needs nothing else.
         $this->assertSame(
-            [CommissionLifecycle::class, CommissionPoster::class],
+            [CommissionLifecycle::class, CommissionPoster::class, CommissionAdjustmentPoster::class, BinaryFinancialCorrectionAllocator::class],
             array_map(static fn (\ReflectionParameter $parameter): string => (string) $parameter->getType(), $constructor?->getParameters() ?? []),
         );
+        $this->assertNull((new \ReflectionClass(BinaryFinancialCorrectionAllocator::class))->getConstructor());
     }
 
     private function process(VolumeEntry $reversal): CommissionAdjustmentResult

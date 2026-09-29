@@ -373,6 +373,33 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_ledger_postings'));
     }
 
+    public function test_binary_commissions_are_corrected_financially_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'Alice', 'Bob', 'Charlie');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['Bob'], $members['Alice'], BinarySide::Left);
+        $this->binary()->place($members['Charlie'], $members['Alice'], BinarySide::Right);
+        $this->travelBack();
+        $component = $this->fixedComponent('binary.pairing.fixed', ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '100'], $plan);
+        $small = $this->sale($members['Bob'], '30', '2026-01-10', 'order:ORD-1');
+        $this->sale($members['Bob'], '70', '2026-01-11', 'order:ORD-2');
+        $this->sale($members['Charlie'], '100', '2026-01-10', 'order:ORD-3');
+        $commission = $this->approved($this->monthly($component, '2026-01')->commissions()->sole());
+        $reversal = $this->reverse($small, 'refund:RF-1', at: CarbonImmutable::parse('2026-02-05 00:00:00'));
+        $this->monthly($component, '2026-02');
+
+        // The journal, the adjustments and the posting are all read and
+        // written on [mlm].
+        $adjustment = $this->app->make(CommissionAdjustmentEngine::class)->processBinaryReversal($reversal)->adjustments[0];
+        $posted = $this->poster()->post($commission);
+
+        $this->assertSame(['mlm', '-30', CommissionAdjustmentOutcome::Recorded], [$adjustment->getConnectionName(), $adjustment->amount->value(), $adjustment->outcome]);
+        $this->assertSame(['mlm', '70', '70'], [$posted->getConnectionName(), $posted->postedAmount?->value(), $this->balances()->forWallet(Wallet::query()->sole())->value()]);
+        $this->assertSame(1, DB::connection('mlm')->table('mlm_commission_adjustments')->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commission_adjustments'));
+    }
+
     public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void
     {
         $component = $this->commissionComponent();

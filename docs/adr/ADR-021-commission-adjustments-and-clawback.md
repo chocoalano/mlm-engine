@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.1.
+Accepted — Phase 3.1. Amended in Phase 3.4C: `CommissionAdjustment` also represents partial binary financial corrections — source `binary-volume-reversal`, a share of the stored amount that may be zero, outcomes `recorded` and `adjusted` (ADR-026). Source-entry clawback is unchanged.
 
 ## Context
 

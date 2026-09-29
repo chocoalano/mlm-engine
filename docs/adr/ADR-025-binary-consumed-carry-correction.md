@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.4B.
+Accepted — Phase 3.4B. Completed in Phase 3.4C: the journal's commissions are corrected financially — the undone share of their stored amount, before or after posting (ADR-026). Binary structure, pairing, carry, consumed-source reversal and financial correction are complete.
 
 ## Context
 
@@ -22,4 +22,4 @@ Binary carry is kept source by source, and every pair records which lots it drew
 ## Consequences
 
 - A pairing run no longer stops at a reversal of paid-out carry: the binary state is corrected, exactly and explainably, and `BinaryPairingCorrectionRequired` is gone.
-- Commissions earned on undone pairs still stand; correcting them from the journal is the next phase.
+- Commissions earned on undone pairs still stand until `CommissionAdjustmentEngine::processBinaryReversal()` corrects them from the journal (ADR-026); until then they cannot be posted.

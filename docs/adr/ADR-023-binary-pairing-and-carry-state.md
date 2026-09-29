@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.3. Amended in Phase 3.4B: a reversal of carry that was already paired no longer stops the run; the pairs it fed are undone and the other side's carry given back (ADR-025), and results record `left_restored`/`right_restored`.
+Accepted — Phase 3.3. Amended in Phase 3.4B: a reversal of carry that was already paired no longer stops the run; the pairs it fed are undone and the other side's carry given back (ADR-025), and results record `left_restored`/`right_restored`. Completed in Phase 3.4C: the commissions of undone pairs are corrected financially (ADR-026) — binary structure, pairing, carry, consumed-source reversal and financial correction are complete.
 
 ## Context
 

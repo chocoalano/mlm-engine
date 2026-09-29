@@ -12,6 +12,13 @@ namespace PandaBear\Mlm\Commission;
  *   reversed now.
  * - `already_cancelled`: it had been cancelled before; nothing changed.
  * - `already_reversed`: it had been reversed before; nothing moved again.
+ * - `recorded`: a binary correction (ADR-026) that moved no money: it
+ *   reduces what posting the commission may still move, or was too small
+ *   to be worth a financial millionth. The commission's status is
+ *   unchanged.
+ * - `adjusted`: a binary correction of a posted commission that moved part
+ *   of its money back, in a ledger transaction of its own. The commission
+ *   stays posted; its original posting is untouched.
  */
 enum CommissionAdjustmentOutcome: string
 {
@@ -19,4 +26,6 @@ enum CommissionAdjustmentOutcome: string
     case Reversed = 'reversed';
     case AlreadyCancelled = 'already_cancelled';
     case AlreadyReversed = 'already_reversed';
+    case Recorded = 'recorded';
+    case Adjusted = 'adjusted';
 }

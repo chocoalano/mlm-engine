@@ -63,6 +63,8 @@ final class CommissionPosterTest extends DatabaseTestCase
         $this->assertNotNull($transaction);
 
         $this->assertSame([CommissionStatus::Posted, '2026-07-05 08:00:00'], [$posted->status, $posted->posted_at?->format('Y-m-d H:i:s')]);
+        // With no correction recorded, posting moves the whole amount.
+        $this->assertSame(['125.000001', '125.000001'], [$posted->amount->value(), $posted->postedAmount?->value()]);
         $this->assertSame(
             [$this->plan->program_id, 'IDR', 'commission', 'commission', $commission->id, "commission.post.{$commission->id}", '2026-06-30 23:59:59', null],
             [$transaction->program_id, $transaction->currency, $transaction->type, $transaction->source_type, $transaction->source_id, $transaction->idempotency_key, $transaction->occurred_at->format('Y-m-d H:i:s'), $transaction->reversal_of_id],
@@ -139,6 +141,28 @@ final class CommissionPosterTest extends DatabaseTestCase
         $this->poster()->post($posted);
     }
 
+    public function test_a_posted_commission_is_checked_against_the_amount_it_records_as_posted(): void
+    {
+        $posted = $this->poster()->post($this->approved($this->commissionOf($this->alice)));
+
+        // Only raw writes change what a commission says it posted.
+        DB::table('mlm_commissions')->where('id', $posted->id)->update(['posted_amount_millionths' => 100_000_000]);
+
+        try {
+            $this->poster()->post($posted);
+            $this->fail('A commission posting other than it records was accepted.');
+        } catch (InvalidCommissionPosting $exception) {
+            $this->assertStringContainsString('does not post it', $exception->getMessage());
+        }
+
+        DB::table('mlm_commissions')->where('id', $posted->id)->update(['posted_amount_millionths' => null]);
+
+        $this->expectException(InvalidCommissionPosting::class);
+        $this->expectExceptionMessage('it records no posted amount');
+
+        $this->poster()->reverse($posted, CarbonImmutable::parse('2026-08-01'));
+    }
+
     public function test_a_ledger_failure_leaves_the_commission_approved_and_no_money_moved(): void
     {
         $commission = $this->approved($this->commissionOf($this->alice));
@@ -154,6 +178,7 @@ final class CommissionPosterTest extends DatabaseTestCase
 
         $this->assertSame(CommissionStatus::Approved, $commission->refresh()->status);
         $this->assertNull($commission->ledger_transaction_id);
+        $this->assertNull($commission->postedAmount);
         $this->assertSame($before, $this->ledgerRows());
     }
 

@@ -14,12 +14,23 @@ use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
 use PandaBear\Mlm\Finance\FinancialAmount;
 
 /**
- * Why and how a calculated commission was corrected (ADR-021): its type —
- * `clawback` — the record that required it, the signed amount it corrects
- * by, when, and what it did to the commission. Written once, when the
- * correction completes, by `CommissionAdjustmentEngine`; read-only through
- * Eloquent. The commission's calculated facts are never changed: the
- * correction is its lifecycle and the ledger's reversal, recorded here.
+ * Why and how a calculated commission was corrected (ADR-021, ADR-026): its
+ * type — `clawback` — the record that required it, the signed amount it
+ * corrects by, when, and what it did to the commission. Written once, when
+ * the correction completes, by `CommissionAdjustmentEngine`; read-only
+ * through Eloquent. The commission's calculated facts are never changed:
+ * the correction is its lifecycle, the ledger's movements and this record.
+ *
+ * A source reversal (`volume-entry-reversal`) claws a commission back
+ * whole: its amount negated, outcome `cancelled`, `reversed`,
+ * `already_cancelled` or `already_reversed`. A binary reversal
+ * (`binary-volume-reversal`) takes back the share of a pairing it undid,
+ * which may be part of the amount, or nothing: an adjustment of zero is
+ * still written, so the reversal is known to be processed. Its outcome may
+ * also be `recorded` — no money moved; posting will pay what is left — or
+ * `adjusted` — money moved back from a posted commission in a ledger
+ * transaction of its own. A commission's net amount is its calculated
+ * amount plus all its adjustments (`CommissionNetAmount`).
  *
  * @property string $id
  * @property string $program_id

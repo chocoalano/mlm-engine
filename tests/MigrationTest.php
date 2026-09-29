@@ -437,7 +437,7 @@ final class MigrationTest extends TestCase
             [
                 'id', 'calculation_run_id', 'program_id', 'member_id', 'candidate_key', 'currency', 'amount_millionths', 'earned_at', 'trace',
                 'status', 'pending_at', 'approved_at', 'posted_at', 'cancelled_at', 'reversed_at', 'source_type', 'source_id',
-                'ledger_transaction_id', 'reversal_ledger_transaction_id', 'created_at', 'updated_at',
+                'ledger_transaction_id', 'reversal_ledger_transaction_id', 'posted_amount_millionths', 'created_at', 'updated_at',
             ],
             Schema::getColumnListing('mlm_commissions'),
         );
@@ -451,6 +451,11 @@ final class MigrationTest extends TestCase
         $amount = collect(Schema::getColumns('mlm_commissions'))->firstWhere('name', 'amount_millionths');
         $this->assertIsArray($amount);
         $this->assertStringContainsStringIgnoringCase('int', $amount['type_name']);
+
+        $posted = collect(Schema::getColumns('mlm_commissions'))->firstWhere('name', 'posted_amount_millionths');
+        $this->assertIsArray($posted);
+        $this->assertStringContainsStringIgnoringCase('int', $posted['type_name']);
+        $this->assertTrue($posted['nullable']);
     }
 
     public function test_a_database_at_000016_upgrades_to_calculation_runs_without_touching_its_rows(): void
@@ -534,11 +539,13 @@ final class MigrationTest extends TestCase
             );
         }
 
-        // Nothing else of any commission, nor any other row, changed.
+        // Nothing else of any commission, nor any other row, changed; none
+        // was posted, so none records a posted amount.
         $this->assertSame($commissionsBefore, array_map(
-            static fn (array $row): array => array_diff_key($row, ['source_type' => 1, 'source_id' => 1]),
+            static fn (array $row): array => array_diff_key($row, ['source_type' => 1, 'source_id' => 1, 'posted_amount_millionths' => 1]),
             $this->rowsOf(['mlm_commissions'])['mlm_commissions'],
         ));
+        $this->assertSame(0, DB::table('mlm_commissions')->whereNotNull('posted_amount_millionths')->count());
         $this->assertSame($before, $this->rowsOf(array_keys($before)));
 
         // The backfilled provenance is what a later reversal is found by.
@@ -794,6 +801,42 @@ final class MigrationTest extends TestCase
         $this->assertSame($schema, $this->schemaOf());
     }
 
+    public function test_a_database_at_000029_records_what_was_posted_for_posted_commissions_only_and_can_lose_it_again(): void
+    {
+        // Commissions in every status, as the package kept them before
+        // posted amounts existed: every posting then moved the whole amount.
+        [, $commissions] = $this->legacyCommissions();
+        $this->artisan('migrate', ['--path' => $this->migrations('000020', '000029'), '--realpath' => true])->assertSuccessful();
+        $statuses = array_combine(array_values($commissions), ['posted', 'reversed', 'approved', 'cancelled', 'calculated']);
+
+        foreach ($statuses as $id => $status) {
+            DB::table('mlm_commissions')->where('id', $id)->update(['status' => $status, 'amount_millionths' => 10_000_000 + strlen($status)]);
+        }
+
+        $this->assertFalse(Schema::hasColumn('mlm_commissions', 'posted_amount_millionths'));
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf(self::TABLES);
+
+        $this->artisan('migrate', ['--path' => $this->migration('000030'), '--realpath' => true])->assertSuccessful();
+
+        $posted = [];
+
+        foreach (DB::table('mlm_commissions')->get(['status', 'posted_amount_millionths']) as $row) {
+            $posted[$row->status] = $row->posted_amount_millionths === null ? null : (string) $row->posted_amount_millionths;
+        }
+
+        ksort($posted);
+        $this->assertSame(['approved' => null, 'calculated' => null, 'cancelled' => null, 'posted' => '10000006', 'reversed' => '10000008'], $posted);
+        $this->assertSame($rows['mlm_commissions'], array_map(static fn (array $row): array => array_diff_key($row, ['posted_amount_millionths' => true]), $this->rowsOf(['mlm_commissions'])['mlm_commissions']));
+        $this->assertSame(array_diff_key($rows, ['mlm_commissions' => true]), array_diff_key($this->rowsOf(self::TABLES), ['mlm_commissions' => true]));
+
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000030'), '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame($rows, $this->rowsOf(self::TABLES));
+        $this->assertSame(29, DB::table('migrations')->count());
+    }
+
     public function test_a_database_at_000022_gains_empty_binary_pairing_state_and_can_lose_it_again(): void
     {
         // Everything the package wrote before binary pairing: genealogies, a
@@ -808,7 +851,7 @@ final class MigrationTest extends TestCase
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
-        $this->artisan('migrate')->assertSuccessful();
+        $this->artisan('migrate', ['--path' => $this->migrations('000023', '000029'), '--realpath' => true])->assertSuccessful();
 
         // No carry is made up for history: the tables start empty.
         foreach (self::PAIRING_TABLES as $table) {
@@ -1066,6 +1109,26 @@ final class MigrationTest extends TestCase
         $this->app->make(PlanVersionLifecycle::class)->markValidated($version);
 
         $this->app->make(CalculationEngine::class)->calculate(PlanComponent::query()->findOrFail($component->id), new CalculationContext(now()->subDay(), now()->addDay(), 'binary:1'));
+    }
+
+    /**
+     * The migration files numbered `$from` through `$to`, as real paths.
+     *
+     * @return list<string>
+     */
+    private function migrations(string $from, string $to): array
+    {
+        $files = array_values(array_filter(
+            glob(dirname(__DIR__).'/database/migrations/2026_09_28_*.php') ?: [],
+            static function (string $file) use ($from, $to): bool {
+                $number = substr(basename($file), 11, 6);
+
+                return $number >= $from && $number <= $to;
+            },
+        ));
+        $this->assertCount((int) $to - (int) $from + 1, $files);
+
+        return $files;
     }
 
     /**

@@ -13,12 +13,14 @@ use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
+use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
+use PandaBear\Mlm\Exceptions\UnresolvedBinaryCorrection;
 use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\CalculationRun;
@@ -1000,6 +1002,178 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         }
 
         fwrite(STDERR, sprintf("\n[race %s] %s => %s\n", ExternalDatabase::selected()?->engine, $postFirst ? 'post waited first' : 'clawback waited first', $status));
+    }
+
+    /**
+     * Two processors of one binary reversal (ADR-026) serialize on the
+     * reversal's row: the posted commission is corrected once, and its
+     * share moves back once.
+     */
+    public function test_racing_binary_corrections_of_one_reversal_move_its_share_back_once(): void
+    {
+        [$commission, $reversal] = $this->binaryCorrection(partial: true, posted: true);
+
+        $this->holdRow('mlm_volume_entries', $reversal->id);
+        $first = $this->start(['op' => 'binary_clawback', 'reversal' => $reversal->id]);
+        $second = $this->start(['op' => 'binary_clawback', 'reversal' => $reversal->id]);
+        $this->awaitWaitingOn(['mlm_volume_entries', 'mlm_volume_entries']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $shown = json_encode([$a, $b], JSON_THROW_ON_ERROR);
+        $this->assertSame([true, '1', true, '1'], [$a['ok'], $a['id'] ?? null, $b['ok'], $b['id'] ?? null], $shown);
+        $adjustment = DB::table('mlm_commission_adjustments')->sole();
+        $this->assertSame(['-30000000', 'adjusted'], [(string) $adjustment->amount_millionths, $adjustment->outcome]);
+        $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('type', 'commission-adjustment')->count());
+        $this->assertSame('posted', DB::table('mlm_commissions')->where('id', $commission->id)->value('status'));
+        $this->assertSame('70', $this->balances()->forWallet(Wallet::query()->sole())->value());
+    }
+
+    /**
+     * Two reversals undoing one approved commission's pair between them
+     * serialize on the commission's row, and the second sees what the
+     * first recorded: whichever goes first, the one that leaves nothing
+     * cancels the commission.
+     */
+    public function test_racing_corrections_of_two_reversals_of_one_commission_see_each_other(): void
+    {
+        [$commission, $first] = $this->binaryCorrection(partial: true, second: true);
+        $second = VolumeEntry::query()->where('idempotency_key', 'l2-refund')->sole();
+
+        $this->holdRow('mlm_commissions', $commission->id);
+        $a = $this->start(['op' => 'binary_clawback', 'reversal' => $first->id]);
+        $this->awaitWaitingOn(['mlm_commissions']);
+        $b = $this->start(['op' => 'binary_clawback', 'reversal' => $second->id]);
+        $this->awaitWaitingOn(['mlm_commissions', 'mlm_commissions']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($a), $this->finish($b)];
+        $shown = json_encode([$a, $b], JSON_THROW_ON_ERROR);
+        $this->assertTrue($a['ok'] && $b['ok'], $shown);
+
+        $adjustments = DB::table('mlm_commission_adjustments')->orderBy('created_at')->orderBy('id')->get()
+            ->mapWithKeys(static fn (object $row): array => [$row->source_id === $first->id ? 'l1' : 'l2' => [(string) $row->amount_millionths, $row->outcome]])
+            ->all();
+        ksort($adjustments);
+
+        $this->assertContains($adjustments, [
+            ['l1' => ['-30000000', 'recorded'], 'l2' => ['-70000000', 'cancelled']],
+            ['l1' => ['-30000000', 'cancelled'], 'l2' => ['-70000000', 'recorded']],
+        ], $shown);
+        $this->assertSame('cancelled', DB::table('mlm_commissions')->where('id', $commission->id)->value('status'));
+        $this->assertSame(0, DB::table('mlm_ledger_transactions')->count());
+    }
+
+    /**
+     * @return array<string, array{bool, bool}>
+     */
+    public static function postAndBinaryCorrectionOrders(): array
+    {
+        return [
+            'partial, the post waits first' => [true, true],
+            'partial, the correction waits first' => [true, false],
+            'full, the post waits first' => [false, true],
+            'full, the correction waits first' => [false, false],
+        ];
+    }
+
+    /**
+     * A post racing a binary correction of the same approved commission
+     * serializes on the commission's row. A post that wins it finds the
+     * correction unresolved and is refused; one that loses posts what is
+     * left, or finds the commission cancelled. Either way, once posting is
+     * retried, the money moved is the same, and moved once.
+     */
+    #[DataProvider('postAndBinaryCorrectionOrders')]
+    public function test_a_post_racing_a_binary_correction_ends_with_the_same_money_moved(bool $partial, bool $postFirst): void
+    {
+        [$commission, $reversal] = $this->binaryCorrection($partial);
+        $jobs = [
+            'post' => ['op' => 'commission_post', 'commission' => $commission->id],
+            'correction' => ['op' => 'binary_clawback', 'reversal' => $reversal->id],
+        ];
+
+        $this->holdRow('mlm_commissions', $commission->id);
+        $workers = [];
+
+        foreach ($postFirst ? ['post', 'correction'] : ['correction', 'post'] as $index => $name) {
+            $workers[$name] = $this->start($jobs[$name]);
+            $this->awaitWaitingOn(array_fill(0, $index + 1, 'mlm_commissions'));
+        }
+
+        $this->openGate();
+
+        [$post, $correction] = [$this->finish($workers['post']), $this->finish($workers['correction'])];
+        $shown = json_encode([$post, $correction], JSON_THROW_ON_ERROR);
+        $this->assertTrue($correction['ok'], $shown);
+
+        if (! $post['ok']) {
+            $this->assertContains($post['exception'], [UnresolvedBinaryCorrection::class, InvalidCommissionTransition::class], $shown);
+        }
+
+        $retry = null;
+
+        if ($partial && ! $post['ok']) {
+            $retry = $this->poster()->post(Commission::query()->findOrFail($commission->id));
+        }
+
+        $adjustment = DB::table('mlm_commission_adjustments')->where('commission_id', $commission->id)->sole();
+        $status = DB::table('mlm_commissions')->where('id', $commission->id)->value('status');
+
+        if ($partial) {
+            $this->assertSame(['-30000000', 'recorded', null], [(string) $adjustment->amount_millionths, $adjustment->outcome, $adjustment->ledger_transaction_id], $shown);
+            $this->assertSame(['posted', '70000000'], [$status, (string) DB::table('mlm_commissions')->where('id', $commission->id)->value('posted_amount_millionths')], $shown);
+            $this->assertSame(1, DB::table('mlm_ledger_transactions')->count(), $shown);
+            $this->assertSame('70', $this->balances()->forWallet(Wallet::query()->sole())->value(), $shown);
+        } else {
+            $this->assertFalse($post['ok'], $shown);
+            $this->assertSame(['-100000000', 'cancelled', 'cancelled'], [(string) $adjustment->amount_millionths, $adjustment->outcome, $status], $shown);
+            $this->assertSame(0, DB::table('mlm_ledger_transactions')->count(), $shown);
+        }
+
+        fwrite(STDERR, sprintf("\n[binary race %s] %s, %s => post %s%s\n", ExternalDatabase::selected()?->engine, $partial ? 'partial' : 'full', $postFirst ? 'post waited first' : 'correction waited first', $post['ok'] ? 'ok' : $post['exception'], $retry === null ? '' : ', retried'));
+    }
+
+    /**
+     * An approved binary commission of 100 on one pair of 100 — left l1 30
+     * and l2 70 when `$partial`, l1 100 otherwise; right r1 100 — posted if
+     * asked before anything is undone, and a reversal of l1 the next
+     * month's run has taken in: its pair is undone by 30, or wholly. With
+     * `$second`, l2 is reversed in that run too, a day later.
+     *
+     * @return array{Commission, VolumeEntry}
+     */
+    private function binaryCorrection(bool $partial, bool $posted = false, bool $second = false): array
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'P', 'L', 'R');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['L'], $members['P'], BinarySide::Left);
+        $this->binary()->place($members['R'], $members['P'], BinarySide::Right);
+        $this->travelBack();
+        $source = $this->sale($members['L'], $partial ? '30' : '100', '2026-01-10', 'l1');
+
+        $rest = $partial ? $this->sale($members['L'], '70', '2026-01-11', 'l2') : null;
+
+        $this->sale($members['R'], '100', '2026-01-10', 'r1');
+        $component = $this->fixedComponent('binary.pairing.fixed', ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '100'], $plan);
+        $commission = $this->approved($this->calculate($component, '2026-01-01 00:00:00', '2026-02-01 00:00:00', 'jan')->commissions()->sole());
+
+        if ($posted) {
+            $commission = $this->poster()->post($commission);
+        }
+
+        $reversal = $this->reverse($source, 'l1-refund', at: CarbonImmutable::parse('2026-02-05'));
+
+        if ($second && $rest !== null) {
+            $this->reverse($rest, 'l2-refund', at: CarbonImmutable::parse('2026-02-06'));
+        }
+
+        $this->calculate($component, '2026-02-01 00:00:00', '2026-03-01 00:00:00', 'feb');
+
+        return [$commission, $reversal];
     }
 
     /**
