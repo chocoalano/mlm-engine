@@ -15,6 +15,8 @@ use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
 use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
+use PandaBear\Mlm\Exceptions\InvalidMatrixNetwork;
+use PandaBear\Mlm\Exceptions\InvalidMatrixPlacement;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
@@ -346,6 +348,126 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         // The reversed source holds nothing; R's 120 and 180 are carry again.
         $source = DB::table('mlm_binary_carry_lots')->where('source_volume_entry_id', VolumeEntry::query()->where('idempotency_key', 'l1')->value('id'))->sole();
         $this->assertSame(['0', true], [(string) $source->remaining_millionths, $source->reversed_by_volume_entry_id !== null]);
+    }
+
+    /**
+     * @return array<string, array{int, bool}>
+     */
+    public static function matrixConfigurations(): array
+    {
+        return ['the same width' => [3, true], 'another width' => [4, false]];
+    }
+
+    /**
+     * Two first configurations of one program's matrix serialize on the
+     * program's row (ADR-027): the same width converges on one network, and
+     * another width is refused — never two networks, never a raw key error.
+     */
+    #[DataProvider('matrixConfigurations')]
+    public function test_racing_first_configurations_of_a_matrix_make_one_network(int $secondWidth, bool $bothSucceed): void
+    {
+        $program = Program::factory()->create();
+
+        $this->holdRow('mlm_programs', $program->id);
+        $first = $this->start(['op' => 'matrix_configure', 'program' => $program->id, 'width' => 3]);
+        $this->awaitWaitingOn(['mlm_programs']);
+        $second = $this->start(['op' => 'matrix_configure', 'program' => $program->id, 'width' => $secondWidth]);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+
+        if ($bothSucceed) {
+            $this->assertSame([true, true], [$results[0]['ok'], $results[1]['ok']], json_encode($results, JSON_THROW_ON_ERROR));
+            $this->assertSame($results[0]['id'], $results[1]['id']);
+        } else {
+            $this->assertOneSucceededOneRefused($results, InvalidMatrixNetwork::class, 'a matrix width is configured once and never changes');
+        }
+
+        $this->assertSame(1, DB::table('mlm_matrix_networks')->where('program_id', $program->id)->count());
+    }
+
+    /**
+     * @return array<string, array{int, bool}>
+     */
+    public static function matrixSlotRaces(): array
+    {
+        return ['the same slot' => [1, false], 'another slot' => [2, true]];
+    }
+
+    /**
+     * Two placements under one matrix parent serialize on the program's row.
+     * Into one slot, one wins and the other is refused with nothing of its
+     * generic placement left; into two slots, both are placed.
+     */
+    #[DataProvider('matrixSlotRaces')]
+    public function test_racing_matrix_placements_under_one_parent(int $secondSlot, bool $bothSucceed): void
+    {
+        $members = $this->members(Program::factory()->create(), 'P', 'A', 'B');
+        $this->matrixNetworks()->configure($members['P']->program, 3);
+
+        $this->holdRow('mlm_programs', $members['P']->program_id);
+        $first = $this->start(['op' => 'matrix_place', 'member' => $members['A']->id, 'parent' => $members['P']->id, 'slot' => 1]);
+        $second = $this->start(['op' => 'matrix_place', 'member' => $members['B']->id, 'parent' => $members['P']->id, 'slot' => $secondSlot]);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+
+        if ($bothSucceed) {
+            $this->assertSame([true, true], [$results[0]['ok'], $results[1]['ok']], json_encode($results, JSON_THROW_ON_ERROR));
+            $this->assertSame(['A #1', 'B #2'], $this->matrixSlots());
+            $this->assertSame(2, DB::table('mlm_placement_edges')->count());
+        } else {
+            $this->assertOneSucceededOneRefused($results, InvalidMatrixPlacement::class, 'Matrix slot 1 of member');
+            // The loser's generic placement went with it.
+            $this->assertCount(1, $this->matrixSlots());
+            $this->assertSame(1, DB::table('mlm_placement_edges')->count());
+            $this->assertSame(3, DB::table('mlm_genealogy_paths')->where('tree_type', 'placement')->count());
+        }
+
+        $this->assertSame(DB::table('mlm_genealogy_paths')->where('tree_type', 'placement')->count(), DB::table('mlm_genealogy_paths')->where('tree_type', 'matrix')->count());
+    }
+
+    /**
+     * @return array<string, array{int, bool}>
+     */
+    public static function matrixAdoptions(): array
+    {
+        return ['the same slot' => [2, true], 'another slot' => [3, false]];
+    }
+
+    /**
+     * Two adoptions of one edge serialize on the program's row: into one
+     * slot both resolve the same position; into another, one is refused.
+     */
+    #[DataProvider('matrixAdoptions')]
+    public function test_racing_adoptions_of_one_edge_into_the_matrix_adopt_it_once(int $secondSlot, bool $bothSucceed): void
+    {
+        $members = $this->members(Program::factory()->create(), 'P', 'A');
+        $this->matrixNetworks()->configure($members['P']->program, 3);
+        $edge = $this->placement()->place($members['A'], $members['P']);
+
+        $this->holdRow('mlm_programs', $members['P']->program_id);
+        $first = $this->start(['op' => 'matrix_adopt', 'edge' => $edge->id, 'slot' => 2]);
+        $second = $this->start(['op' => 'matrix_adopt', 'edge' => $edge->id, 'slot' => $secondSlot]);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+
+        if ($bothSucceed) {
+            $this->assertSame([true, true], [$results[0]['ok'], $results[1]['ok']], json_encode($results, JSON_THROW_ON_ERROR));
+            $this->assertSame($results[0]['id'], $results[1]['id']);
+        } else {
+            $this->assertOneSucceededOneRefused($results, InvalidMatrixPlacement::class, 'a matrix slot is assigned once and never moves');
+        }
+
+        $this->assertCount(1, $this->matrixSlots());
+        $this->assertSame(3, DB::table('mlm_genealogy_paths')->where('tree_type', 'matrix')->count());
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -1218,6 +1340,22 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
     private function calculateJob(PlanComponent $component, string $until): array
     {
         return ['op' => 'calculate', 'component' => $component->id, 'from' => '2026-06-01 00:00:00', 'until' => $until, 'key' => 'run:2026-06'];
+    }
+
+    /**
+     * Every matrix position as "member #slot", by member code, sorted.
+     *
+     * @return list<string>
+     */
+    private function matrixSlots(): array
+    {
+        $codes = Member::query()->pluck('member_code', 'id');
+
+        return DB::table('mlm_matrix_placement_positions as positions')
+            ->join('mlm_placement_edges as edges', 'edges.id', '=', 'positions.placement_edge_id')
+            ->get(['edges.member_id', 'positions.slot'])
+            ->map(static fn (object $position): string => "{$codes[$position->member_id]} #{$position->slot}")
+            ->sort()->values()->all();
     }
 
     /**

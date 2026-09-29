@@ -36,6 +36,8 @@ use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
 use PandaBear\Mlm\Finance\WalletManager;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+use PandaBear\Mlm\Matrix\MatrixNetworkManager;
+use PandaBear\Mlm\Matrix\MatrixPlacementManager;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
@@ -123,6 +125,10 @@ try {
             ->place(Member::findOrFail($job['member']), Member::findOrFail($job['parent']), BinarySide::from($job['side']))->getKey(),
         'binary_adopt' => app(BinaryPlacementManager::class)
             ->adopt(PlacementEdge::findOrFail($job['edge']), BinarySide::from($job['side']))->getKey(),
+        'matrix_configure' => app(MatrixNetworkManager::class)->configure(Program::findOrFail($job['program']), $job['width'])->getKey(),
+        'matrix_place' => app(MatrixPlacementManager::class)
+            ->place(Member::findOrFail($job['member']), Member::findOrFail($job['parent']), $job['slot'])->getKey(),
+        'matrix_adopt' => app(MatrixPlacementManager::class)->adopt(PlacementEdge::findOrFail($job['edge']), $job['slot'])->getKey(),
         'record' => app(VolumeRecorder::class)->record($record($job))->getKey(),
         'reverse' => app(VolumeRecorder::class)->reverse(new ReverseVolume(
             entry: VolumeEntry::findOrFail($job['entry']),

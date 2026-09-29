@@ -13,6 +13,10 @@ use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\PlacementRelative;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorRelative;
+use PandaBear\Mlm\Matrix\MatrixGenealogy;
+use PandaBear\Mlm\Matrix\MatrixNetworkManager;
+use PandaBear\Mlm\Matrix\MatrixPlacementManager;
+use PandaBear\Mlm\Matrix\MatrixRelative;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
 
@@ -40,6 +44,21 @@ trait BuildsGenealogies
     protected function binaryTree(): BinaryGenealogy
     {
         return $this->app->make(BinaryGenealogy::class);
+    }
+
+    protected function matrixNetworks(): MatrixNetworkManager
+    {
+        return $this->app->make(MatrixNetworkManager::class);
+    }
+
+    protected function matrix(): MatrixPlacementManager
+    {
+        return $this->app->make(MatrixPlacementManager::class);
+    }
+
+    protected function matrixTree(): MatrixGenealogy
+    {
+        return $this->app->make(MatrixGenealogy::class);
     }
 
     /**
@@ -145,10 +164,31 @@ trait BuildsGenealogies
     }
 
     /**
+     * The matrix overlay alone: its positions, with their slot and moment,
+     * and its paths.
+     *
+     * @return array{positions: list<string>, paths: list<string>}
+     */
+    protected function matrixState(?string $connection = null): array
+    {
+        $codes = Member::query()->pluck('member_code', 'id');
+        $db = DB::connection($connection);
+
+        return [
+            'positions' => $db->table('mlm_matrix_placement_positions as positions')
+                ->join('mlm_placement_edges as edges', 'edges.id', '=', 'positions.placement_edge_id')
+                ->get(['positions.parent_id', 'positions.slot', 'positions.assigned_at', 'edges.member_id'])
+                ->map(static fn (object $position): string => "{$codes[$position->parent_id]} > {$codes[$position->member_id]} #{$position->slot} @{$position->assigned_at}")
+                ->sort()->values()->all(),
+            'paths' => $this->treeState('matrix', 'mlm_placement_edges', 'parent_id', $connection)['paths'],
+        ];
+    }
+
+    /**
      * When each path of one tree took effect, exactly as stored, by member
      * code.
      *
-     * @param  'sponsor'|'placement'|'binary'  $tree
+     * @param  'sponsor'|'placement'|'binary'|'matrix'  $tree
      * @return array<string, string> "A > B @1" => "2026-01-01 10:00:00", by path
      */
     protected function pathMoments(string $tree, ?string $connection = null): array
@@ -167,12 +207,12 @@ trait BuildsGenealogies
     }
 
     /**
-     * @param  Collection<int, SponsorRelative|PlacementRelative|BinaryRelative>  $relatives
+     * @param  Collection<int, SponsorRelative|PlacementRelative|BinaryRelative|MatrixRelative>  $relatives
      * @return list<string> "code@depth", in the order given
      */
     protected function relatives(Collection $relatives): array
     {
-        return $relatives->map(static fn (SponsorRelative|PlacementRelative|BinaryRelative $relative): string => "{$relative->member->member_code}@{$relative->depth}")->all();
+        return $relatives->map(static fn (SponsorRelative|PlacementRelative|BinaryRelative|MatrixRelative $relative): string => "{$relative->member->member_code}@{$relative->depth}")->all();
     }
 
     /**

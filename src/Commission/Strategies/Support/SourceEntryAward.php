@@ -17,9 +17,14 @@ use PandaBear\Mlm\Models\VolumeEntry;
  * source entry, as a candidate: keyed by the entry and the depth — so the
  * same entry and depth are always the same candidate, whatever order they
  * are found in — earned when the entry took effect, and traced back to it.
+ * A strategy may add its own sections to the trace; the shared ones are
+ * never replaced.
  */
 final class SourceEntryAward
 {
+    /**
+     * @param  array<string, mixed>  $trace  the strategy's own trace sections
+     */
     public static function candidate(
         string $strategy,
         VolumeEntry $entry,
@@ -27,6 +32,7 @@ final class SourceEntryAward
         Member $recipient,
         int $depth,
         FinancialAmount $amount,
+        array $trace = [],
     ): CommissionCandidate {
         return new CommissionCandidate(
             key: self::key($entry, $depth),
@@ -34,6 +40,7 @@ final class SourceEntryAward
             amount: $amount,
             earnedAt: $entry->effective_at,
             trace: [
+                ...$trace,
                 'strategy' => $strategy,
                 'source' => self::source($entry),
                 'minimum_quantity' => $filter->minimumQuantity->value(),

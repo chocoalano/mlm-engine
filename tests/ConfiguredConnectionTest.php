@@ -26,6 +26,8 @@ use PandaBear\Mlm\Models\CommissionAdjustment;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
+use PandaBear\Mlm\Models\MatrixNetwork;
+use PandaBear\Mlm\Models\MatrixPlacementPosition;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
@@ -64,9 +66,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class];
 
     protected function defineEnvironment($app): void
     {
@@ -398,6 +400,33 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(['mlm', '70', '70'], [$posted->getConnectionName(), $posted->postedAmount?->value(), $this->balances()->forWallet(Wallet::query()->sole())->value()]);
         $this->assertSame(1, DB::connection('mlm')->table('mlm_commission_adjustments')->count());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commission_adjustments'));
+    }
+
+    public function test_the_matrix_writes_reads_totals_and_pays_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'Alice', 'Bob', 'Charlie', 'Dave');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $network = $this->matrixNetworks()->configure($plan->program, 3);
+        $this->matrix()->place($members['Bob'], $members['Alice'], 2);
+        $this->matrix()->adopt($this->placement()->place($members['Charlie'], $members['Bob']), 1);
+        $this->placement()->place($members['Dave'], $members['Charlie']);
+        $this->travelBack();
+        $sale = $this->sale($members['Charlie'], '100', '2026-01-10', 'order:ORD-1');
+        $this->sale($members['Dave'], '100', '2026-01-10', 'order:ORD-2');
+        $component = $this->fixedComponent('matrix.fixed', ['volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '1', 'levels' => [['depth' => 1, 'amount' => '10'], ['depth' => 2, 'amount' => '5']]], $plan);
+
+        // Everything exists only on [mlm]: a read or write on the default
+        // connection would fail, not find nothing.
+        $run = $this->monthly($component, '2026-01');
+
+        $this->assertSame(['mlm', 'mlm'], [$network->getConnectionName(), $this->matrixTree()->positionOf($members['Charlie'])?->getConnectionName()]);
+        $this->assertSame(['Bob@1', 'Alice@2'], $this->relatives($this->matrixTree()->ancestors($members['Charlie'])));
+        $this->assertSame('100', $this->app->make(MetricEngine::class)->resolve('matrix.network.volume', new MetricContext($members['Alice'], ['type' => 'sales']))->value());
+        $this->assertSame([['Bob', '10'], ['Alice', '5']], $run->commissions()->orderByDesc('amount_millionths')->get()->map(fn (Commission $commission): array => [Member::query()->findOrFail($commission->member_id)->member_code, $commission->amount->value()])->all());
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_commissions')->where('source_id', $sale->id)->count());
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_matrix_placement_positions')->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_matrix_networks'));
     }
 
     public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void

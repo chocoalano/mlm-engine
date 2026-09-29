@@ -15,9 +15,10 @@ use PandaBear\Mlm\Volume\VolumeInput;
  * @internal
  *
  * Network volume: the net volume of the members below an anchor member in
- * one genealogy, each entry counted for the anchor only if its member was
- * below the anchor when the activity happened. Read by the network metrics.
- * Which genealogy is fixed by the method called, never passed in.
+ * one genealogy — sponsor, generic placement or matrix — each entry counted
+ * for the anchor only if its member was below the anchor when the activity
+ * happened. Read by the network metrics. Which genealogy is fixed by the
+ * method called, never passed in.
  *
  * - An entry falls in the period its own `effective_at` falls in, [from, until).
  * - It counts for the anchor only if the path from the anchor to its member
@@ -60,7 +61,21 @@ final readonly class NetworkVolumeTotals
     }
 
     /**
-     * @param  'sponsor'|'placement'  $tree
+     * Through the matrix paths only (ADR-027): generic-only descendants, and
+     * members adopted into the matrix after the activity, never count.
+     */
+    public function forMatrixNetwork(
+        Member $anchor,
+        string $type,
+        ?int $maxDepth = null,
+        ?DateTimeInterface $from = null,
+        ?DateTimeInterface $until = null,
+    ): Quantity {
+        return $this->total('matrix', $anchor, $type, $maxDepth, $from, $until);
+    }
+
+    /**
+     * @param  'sponsor'|'placement'|'matrix'  $tree
      */
     private function total(
         string $tree,

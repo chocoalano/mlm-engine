@@ -47,4 +47,18 @@ final class EligibleVolumeEntries
             ->with('member')
             ->lazyById(self::CHUNK);
     }
+
+    /**
+     * The eligible entries whose quantity reaches the filter's minimum.
+     *
+     * @return iterable<VolumeEntry> each with its member loaded
+     */
+    public static function reachingMinimum(CommissionCalculationContext $context, SourceEntryFilter $filter): iterable
+    {
+        foreach (self::of($context, $filter) as $entry) {
+            if ($filter->reachesMinimum($entry)) {
+                yield $entry;
+            }
+        }
+    }
 }

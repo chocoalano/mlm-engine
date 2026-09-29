@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based and binary pairing strategies, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, hybrid networks, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -390,7 +390,7 @@ $placement->descendantsAt($bob, CarbonImmutable::parse('2026-06-01 00:00:00'), m
 - A member that already has members placed under it can still receive its first placement parent; its whole placement subtree is attached beneath that parent.
 - Refused placements throw `InvalidPlacementAssignment` and change nothing. Every placement runs in one transaction.
 
-Placement paths share the closure table with sponsor paths under their own `tree_type`, and never leak into sponsor queries. Binary left/right positions are an explicit overlay on these edges ([Binary placement foundation](#binary-placement-foundation)); **matrix slots, spillover and automatic placement strategies are not implemented yet.** A member taking part in the placement tree cannot be deleted.
+Placement paths share the closure table with sponsor paths under their own `tree_type`, and never leak into sponsor queries. Binary left/right positions ([Binary placement foundation](#binary-placement-foundation)) and matrix slots ([Matrix foundation](#matrix-foundation)) are explicit overlays on these edges; **spillover and automatic placement strategies are not implemented yet.** A member taking part in the placement tree cannot be deleted.
 
 Both genealogies are written only through their services. Raw query-builder or SQL writes to the edge or path tables bypass every graph rule: the database backs local invariants — one direct edge per member, one path per pair, foreign keys — but not acyclicity or consistency between edges and paths.
 
@@ -571,6 +571,10 @@ app(MetricEngine::class)->resolve('binary.left.volume', new MetricContext(
 - Both are plan-configurable: a rule, and so a qualification or rank ladder, can use them.
 
 These are structural figures; for pairing commissions and carry, see [Binary pairing & carry](#binary-pairing--carry).
+
+### Built-in: `matrix.network.volume`
+
+The net volume of one type recorded by the members below the member **in the matrix**, over the optional range — see [Matrix foundation](#matrix-foundation). The member's own volume, generic-only members, sponsorship and the binary tree never count; `max_depth` counts from the member (`1` is its direct matrix children). An entry counts only if its member was in the member's matrix when the activity happened, and a reversal follows the activity it reverses — so an edge adopted later never captures earlier activity. Plan-configurable, like the other network metrics.
 
 ### Your own metrics
 
@@ -859,6 +863,68 @@ $engine->calculate($component, new CalculationContext($february1, $march1, 'bina
 - **Reversals.** An entry reversed before its run ends never pairs. A reversal of unpaired carry takes that carry back. A reversal of carry that was **already paired** is corrected in the run its moment falls in: the source's remaining carry is taken back, the pairs it fed are undone, and the same quantity returns to the other side's carry — newest source first — where it can pair again. Results record it as `left_restored`/`right_restored`; earlier results, allocations and commissions never change, and an immutable journal (`BinaryPairingCorrection`, `BinaryPairingRestoration`) explains the correction. The commissions of undone pairs are then corrected financially by an explicit call — see [Binary reversal correction](#binary-reversal-correction). `BinaryReversalImpactAnalyzer::analyze($reversal)` shows, read-only, what a reversal reaches — allocated, invalidated, restored and net consumed quantity per lot, with the pairing results, runs and commissions involved.
 - No rules, carry expiry, pair caps or automatic placement yet.
 
+## Matrix foundation
+
+A matrix is an **overlay** on the generic placement tree, like binary, but with numbered slots. A program has one matrix network whose **width** — how many slots every matrix parent has — is set once and never changes:
+
+```php
+use PandaBear\Mlm\Matrix\MatrixGenealogy;
+use PandaBear\Mlm\Matrix\MatrixNetworkManager;
+use PandaBear\Mlm\Matrix\MatrixPlacementManager;
+
+$network = app(MatrixNetworkManager::class)->configure($program, 3);   // slots 1, 2 and 3
+
+$matrix = app(MatrixPlacementManager::class);
+$matrix->place($memberA, $parent, 1);       // a generic placement and its slot, together
+$matrix->place($memberB, $parent, 2);
+$matrix->adopt($existingPlacementEdge, 3);  // an existing generic edge, from now on
+
+$tree = app(MatrixGenealogy::class);
+$tree->child($parent, 2);                   // the member in slot 2, or null
+$tree->positionOf($memberA);                // MatrixPlacementPosition: network, parent, slot, assigned_at
+$tree->ancestors($memberA);                 // MatrixRelative: member + depth, nearest first
+$tree->descendantsAt($parent, $june1, maxDepth: 2);
+```
+
+- **Width is structure.** A PHP integer from 1 to 100, configured once: the same width again returns the network, another width is refused (`InvalidMatrixNetwork`). It is not a commission parameter; depth limits belong to metrics and strategies, and the matrix itself has no maximum depth.
+- **Slots are explicit.** A slot is a PHP integer from 1 to the width, holds one member, and is assigned once — never moved or removed. A taken slot is refused (`InvalidMatrixPlacement`), and a refused `place()` leaves no generic placement behind. **There is no automatic spillover or free-slot search yet**: you choose the parent and the slot.
+- **Generic placement is untouched.** A parent keeps any number of generic children beside its full matrix; they are simply not in it. A generic-only edge below a matrix member stays outside the matrix until it is adopted itself.
+- **History-aware.** A slot takes effect with its placement, an adoption from the moment of adoption — never before the edge was placed. Adopting an edge brings the member's own matrix subtree along from then on. Earlier activity never becomes matrix activity.
+- **Its own paths**, under `tree_type` `matrix`: independent of sponsorship, generic placement and binary. Stored rows that disagree with their edge, network or width are refused with `CorruptMatrixPlacement`. Existing placements are **not** adopted by the migration.
+
+**Compensation.** `matrix.fixed` and `matrix.proportional` pay the members above the member of each eligible sale, at physical matrix depths, as the matrix stood when the sale took effect:
+
+```php
+$editor->addComponent($draft, key: 'matrix', driver: 'commission.strategy', name: 'Matrix', parameters: [
+    'strategy' => 'matrix.fixed',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',
+        'source_type' => 'order',
+        'minimum_quantity' => '1',
+        'levels' => [['depth' => 1, 'amount' => '10'], ['depth' => 2, 'amount' => '5']],
+    ],
+]);
+
+$editor->addComponent($draft, key: 'matrix', driver: 'commission.strategy', name: 'Matrix', parameters: [
+    'strategy' => 'matrix.proportional',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => [
+        'volume_type' => 'sales',
+        'source_type' => 'order',
+        'minimum_quantity' => '1',
+        'rounding' => 'half_even',
+        'levels' => [['depth' => 1, 'unit_amount' => '0.1'], ['depth' => 2, 'unit_amount' => '0.05']],
+    ],
+]);
+```
+
+- Eligibility, levels, gaps without compression, rounding per entry and depth, and the reversal cutoff are exactly those of the [depth-based strategies](#built-in-strategies) — read through the matrix instead of sponsorship. `unit_amount` is money per unit of quantity, not a percentage.
+- Each commission records its source entry (`volume-entry`), so a later reversal is clawed back by `CommissionAdjustmentEngine::processVolumeReversal()` like any source-entry commission.
+- Stateless: no carry, cycles or boards. Rules are refused.
+
 ## Commission core
 
 A commission is reviewed, then posted to the member's wallet through the ledger:
@@ -963,7 +1029,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, hybrid network composition, performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

@@ -19,10 +19,13 @@ use PandaBear\Mlm\Models\VolumeEntry;
  * unit, rounded on its own — per entry and depth, never after adding awards
  * up — as a candidate keyed, timed and traced like a fixed award, with the
  * calculation behind its amount. An award that rounds to zero is no
- * candidate.
+ * candidate. A strategy may add its own sections to the trace.
  */
 final class ProportionalSourceEntryAward
 {
+    /**
+     * @param  array<string, mixed>  $trace  the strategy's own trace sections
+     */
     public static function candidate(
         string $strategy,
         VolumeEntry $entry,
@@ -31,6 +34,7 @@ final class ProportionalSourceEntryAward
         int $depth,
         FinancialAmount $unitAmount,
         FinancialRoundingMode $rounding,
+        array $trace = [],
     ): ?CommissionCandidate {
         $award = ProportionalAwardCalculator::calculate($entry->quantity, $unitAmount, $rounding);
 
@@ -44,6 +48,7 @@ final class ProportionalSourceEntryAward
             amount: $award->amount,
             earnedAt: $entry->effective_at,
             trace: [
+                ...$trace,
                 'strategy' => $strategy,
                 'source' => SourceEntryAward::source($entry),
                 'minimum_quantity' => $filter->minimumQuantity->value(),

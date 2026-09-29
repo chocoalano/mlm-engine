@@ -13,10 +13,13 @@ use PandaBear\Mlm\Commission\CommissionComponentDriver;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
 use PandaBear\Mlm\Commission\Strategies\DirectSponsorProportionalStrategy;
+use PandaBear\Mlm\Commission\Strategies\MatrixFixedStrategy;
+use PandaBear\Mlm\Commission\Strategies\MatrixProportionalStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelProportionalStrategy;
 use PandaBear\Mlm\Metrics\BinaryLeftVolumeMetric;
 use PandaBear\Mlm\Metrics\BinaryRightVolumeMetric;
+use PandaBear\Mlm\Metrics\MatrixNetworkVolumeMetric;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
@@ -51,6 +54,7 @@ final class PandaMlmServiceProvider extends ServiceProvider
             $registry->register($app->make(PlacementNetworkVolumeMetric::class));
             $registry->register($app->make(BinaryLeftVolumeMetric::class));
             $registry->register($app->make(BinaryRightVolumeMetric::class));
+            $registry->register($app->make(MatrixNetworkVolumeMetric::class));
 
             return $registry;
         });
@@ -76,6 +80,8 @@ final class PandaMlmServiceProvider extends ServiceProvider
             $registry->register($app->make(UnilevelProportionalStrategy::class));
             $registry->register($app->make(BinaryPairingFixedStrategy::class));
             $registry->register($app->make(BinaryPairingProportionalStrategy::class));
+            $registry->register($app->make(MatrixFixedStrategy::class));
+            $registry->register($app->make(MatrixProportionalStrategy::class));
 
             return $registry;
         });

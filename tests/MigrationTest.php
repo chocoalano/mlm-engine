@@ -14,6 +14,8 @@ use PandaBear\Mlm\Calculation\CalculationContext;
 use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
+use PandaBear\Mlm\Commission\CommissionLifecycle;
+use PandaBear\Mlm\Commission\CommissionPoster;
 use PandaBear\Mlm\Finance\LedgerAccountManager;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
 use PandaBear\Mlm\Finance\LedgerRecorder;
@@ -21,6 +23,9 @@ use PandaBear\Mlm\Finance\PostLedgerTransaction;
 use PandaBear\Mlm\Finance\WalletManager;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+use PandaBear\Mlm\Matrix\MatrixNetworkManager;
+use PandaBear\Mlm\Matrix\MatrixPlacementManager;
+use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
@@ -45,7 +50,9 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions'];
+
+    private const MATRIX_TABLES = ['mlm_matrix_networks', 'mlm_matrix_placement_positions'];
 
     private const PAIRING_TABLES = ['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
 
@@ -288,6 +295,10 @@ final class MigrationTest extends TestCase
             'an adjustment names its ledger reversal' => ['mlm_commission_adjustments', 'ledger_transaction_id', 'mlm_ledger_transactions'],
             'a binary position enrols a placement edge' => ['mlm_binary_placement_positions', 'placement_edge_id', 'mlm_placement_edges'],
             'a binary position names its parent' => ['mlm_binary_placement_positions', 'parent_id', 'mlm_members'],
+            'a matrix network belongs to a program' => ['mlm_matrix_networks', 'program_id', 'mlm_programs'],
+            'a matrix position belongs to its network' => ['mlm_matrix_placement_positions', 'matrix_network_id', 'mlm_matrix_networks'],
+            'a matrix position enrols a placement edge' => ['mlm_matrix_placement_positions', 'placement_edge_id', 'mlm_placement_edges'],
+            'a matrix position names its parent' => ['mlm_matrix_placement_positions', 'parent_id', 'mlm_members'],
             'a pairing cursor belongs to a program' => ['mlm_binary_pairing_cursors', 'program_id', 'mlm_programs'],
             'a pairing cursor belongs to its component' => ['mlm_binary_pairing_cursors', 'plan_component_id', 'mlm_plan_components'],
             'a pairing cursor names its last run' => ['mlm_binary_pairing_cursors', 'last_calculation_run_id', 'mlm_calculation_runs'],
@@ -815,7 +826,8 @@ final class MigrationTest extends TestCase
 
         $this->assertFalse(Schema::hasColumn('mlm_commissions', 'posted_amount_millionths'));
         $schema = $this->schemaOf();
-        $rows = $this->rowsOf(self::TABLES);
+        $tables = array_values(array_diff(self::TABLES, self::MATRIX_TABLES));
+        $rows = $this->rowsOf($tables);
 
         $this->artisan('migrate', ['--path' => $this->migration('000030'), '--realpath' => true])->assertSuccessful();
 
@@ -828,13 +840,81 @@ final class MigrationTest extends TestCase
         ksort($posted);
         $this->assertSame(['approved' => null, 'calculated' => null, 'cancelled' => null, 'posted' => '10000006', 'reversed' => '10000008'], $posted);
         $this->assertSame($rows['mlm_commissions'], array_map(static fn (array $row): array => array_diff_key($row, ['posted_amount_millionths' => true]), $this->rowsOf(['mlm_commissions'])['mlm_commissions']));
-        $this->assertSame(array_diff_key($rows, ['mlm_commissions' => true]), array_diff_key($this->rowsOf(self::TABLES), ['mlm_commissions' => true]));
+        $this->assertSame(array_diff_key($rows, ['mlm_commissions' => true]), array_diff_key($this->rowsOf($tables), ['mlm_commissions' => true]));
 
         $this->artisan('migrate:rollback', ['--path' => $this->migration('000030'), '--realpath' => true])->assertSuccessful();
 
         $this->assertSame($schema, $this->schemaOf());
-        $this->assertSame($rows, $this->rowsOf(self::TABLES));
+        $this->assertSame($rows, $this->rowsOf($tables));
         $this->assertSame(29, DB::table('migrations')->count());
+    }
+
+    public function test_the_matrix_tables_have_exactly_their_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(['id', 'program_id', 'width', 'created_at', 'updated_at'], Schema::getColumnListing('mlm_matrix_networks'));
+        $this->assertEqualsCanonicalizing(
+            ['id', 'matrix_network_id', 'placement_edge_id', 'parent_id', 'slot', 'assigned_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_matrix_placement_positions'),
+        );
+        $this->assertSame([['program_id']], $this->uniqueIndexColumns('mlm_matrix_networks'));
+        $this->assertEqualsCanonicalizing([['placement_edge_id'], ['matrix_network_id', 'parent_id', 'slot']], $this->uniqueIndexColumns('mlm_matrix_placement_positions'));
+
+        foreach (['width' => 'mlm_matrix_networks', 'slot' => 'mlm_matrix_placement_positions'] as $column => $table) {
+            $this->assertStringContainsStringIgnoringCase('int', (string) collect(Schema::getColumns($table))->firstWhere('name', $column)['type_name']);
+        }
+
+        // The generic placement stays slotless.
+        $this->assertEqualsCanonicalizing(['id', 'member_id', 'parent_id', 'placed_at', 'created_at', 'updated_at'], Schema::getColumnListing('mlm_placement_edges'));
+    }
+
+    public function test_a_database_at_000030_gains_an_empty_matrix_and_can_lose_it_again(): void
+    {
+        // Everything the package wrote before the matrix: sponsorship, generic
+        // and binary placement, volume, a plan, a binary commission posted to
+        // the ledger, and a binary correction of it.
+        $this->travelTo(now()->setTime(12, 0));
+        $this->artisan('migrate', ['--path' => $this->migrations('000001', '000030'), '--realpath' => true])->assertSuccessful();
+        $this->assertFalse(Schema::hasTable('mlm_matrix_networks'));
+        $this->pairingRun();
+        $component = PlanComponent::query()->where('key', 'binary')->sole();
+        $commission = Commission::query()->sole();
+        $this->app->make(CommissionPoster::class)->post($this->app->make(CommissionLifecycle::class)->approve($this->app->make(CommissionLifecycle::class)->markPending($commission)));
+        $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume(VolumeEntry::query()->where('idempotency_key', 'order:ORD-1')->sole(), 'refund', 'RF-1', 'refund:RF-1', now()->addDays(2)));
+        $this->app->make(CalculationEngine::class)->calculate($component, new CalculationContext(now()->addDay(), now()->addDays(3), 'binary:2'));
+        [$p, $l] = [Member::query()->whereKey(DB::table('mlm_placement_edges')->value('parent_id'))->sole(), Member::query()->whereKey(DB::table('mlm_placement_edges')->value('member_id'))->sole()];
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($l, $p);
+        $this->assertSame(1, DB::table('mlm_binary_pairing_corrections')->count());
+        $tables = array_values(array_diff(self::TABLES, self::MATRIX_TABLES));
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate', ['--path' => $this->migrations('000031', '000032'), '--realpath' => true])->assertSuccessful();
+
+        // Nothing is guessed into the matrix: no network, no position, no path.
+        foreach (self::MATRIX_TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+
+        $this->assertSame($rows, $this->rowsOf($tables));
+
+        // Adopting an existing edge fills the overlay — and the rollback takes
+        // its paths with its positions.
+        $this->app->make(MatrixNetworkManager::class)->configure($p->program, 2);
+        $this->app->make(MatrixPlacementManager::class)->adopt(PlacementEdge::query()->where('member_id', $l->id)->sole(), 2);
+        $this->assertSame(3, DB::table('mlm_genealogy_paths')->where('tree_type', 'matrix')->count());
+
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000032'), '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame(0, DB::table('mlm_genealogy_paths')->where('tree_type', 'matrix')->count());
+        $this->assertFalse(Schema::hasTable('mlm_matrix_placement_positions'));
+
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000031'), '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame($rows, $this->rowsOf($tables));
+        $this->assertSame(30, DB::table('migrations')->count());
     }
 
     public function test_a_database_at_000022_gains_empty_binary_pairing_state_and_can_lose_it_again(): void
@@ -847,7 +927,7 @@ final class MigrationTest extends TestCase
         $alice = Member::query()->whereKeyNot($bob->id)->sole();
         $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
         $this->app->make(BinaryPlacementManager::class)->place($bob, $alice, BinarySide::Left);
-        $tables = array_values(array_diff(self::TABLES, self::PAIRING_TABLES));
+        $tables = array_values(array_diff(self::TABLES, self::PAIRING_TABLES, self::MATRIX_TABLES));
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
@@ -882,7 +962,7 @@ final class MigrationTest extends TestCase
         $reversal = $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
         $this->assertSame(4, $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal)->count());
         $this->assertFalse(Schema::hasTable('mlm_binary_placement_positions'));
-        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions', ...self::PAIRING_TABLES]));
+        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions', ...self::PAIRING_TABLES, ...self::MATRIX_TABLES]));
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
