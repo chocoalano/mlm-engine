@@ -9,19 +9,23 @@ use PandaBear\Mlm\Commission\CommissionStateTransition;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingState;
 use PandaBear\Mlm\Models\BinaryCarryLot;
 use PandaBear\Mlm\Models\BinaryPairingAllocation;
+use PandaBear\Mlm\Models\BinaryPairingCorrection;
 use PandaBear\Mlm\Models\BinaryPairingCursor;
+use PandaBear\Mlm\Models\BinaryPairingRestoration;
 use PandaBear\Mlm\Models\BinaryPairingResult;
 use PandaBear\Mlm\Models\CalculationRun;
 
 /**
- * Commits one binary pairing run's state (ADR-023), inside the run's own
- * transaction, after its commissions: the cursor moves to the run's end;
- * the new lots are stored, the reversed ones taken back, the consumed ones
- * drawn down; and each member's result is written with every lot its pairs
- * consumed. The only writer of binary pairing state.
+ * Commits one binary pairing run's state (ADR-023, ADR-025), inside the
+ * run's own transaction, after its commissions: the cursor moves to the
+ * run's end; the new lots are stored; stored lots are taken back, given back
+ * or drawn down; each undone pair is journalled with what it gave back; and
+ * each member's result is written with every lot its pairs consumed. The
+ * only writer of binary pairing state.
  *
  * It checks first that what the calculation read is still what is stored —
- * the cursor, and every stored lot it changes — and refuses rather than
+ * the cursor, every stored lot it changes, and what earlier corrections had
+ * released of every allocation it undoes — and refuses rather than
  * overwrite anything newer.
  */
 final readonly class BinaryPairingStateTransition implements CommissionStateTransition
@@ -33,6 +37,10 @@ final readonly class BinaryPairingStateTransition implements CommissionStateTran
     private const RESULTS = 'mlm_binary_pairing_results';
 
     private const ALLOCATIONS = 'mlm_binary_pairing_allocations';
+
+    private const CORRECTIONS = 'mlm_binary_pairing_corrections';
+
+    private const RESTORATIONS = 'mlm_binary_pairing_restorations';
 
     private const COMMISSIONS = 'mlm_commissions';
 
@@ -46,8 +54,10 @@ final readonly class BinaryPairingStateTransition implements CommissionStateTran
 
         $this->moveCursor($connection, $run, $now);
         $this->lockStoredLots($connection);
+        $this->checkReleases($connection);
         $lots = $this->storeNewLots($connection, $now);
-        $this->drawDownStoredLots($connection, $now);
+        $this->changeStoredLots($connection, $now);
+        $this->storeCorrections($connection, $run, $now);
         $this->storeResults($connection, $run, $lots, $now);
     }
 
@@ -83,20 +93,13 @@ final readonly class BinaryPairingStateTransition implements CommissionStateTran
     }
 
     /**
-     * Every stored lot the run changes, locked and compared with what the
-     * calculation read.
+     * Every stored lot the run read and may change, locked and compared with
+     * what the calculation read: what it held, and that no reversal had
+     * taken it back.
      */
     private function lockStoredLots(Connection $db): void
     {
-        $expected = [];
-
-        foreach ($this->plan->reversedLots() as $id => $lot) {
-            $expected[$id] = [$lot['quantity'], null];
-        }
-
-        foreach ($this->plan->consumedLots() as $id => $lot) {
-            $expected[$id] = [$lot['expected'], null];
-        }
+        $expected = $this->plan->storedLots();
 
         foreach (array_chunk(array_keys($expected), self::CHUNK) as $chunk) {
             $stored = $db->table(self::LOTS)
@@ -109,9 +112,33 @@ final readonly class BinaryPairingStateTransition implements CommissionStateTran
             foreach ($chunk as $id) {
                 $lot = $stored->get($id);
 
-                if ($lot === null || (string) $lot->remaining_millionths !== $expected[$id][0] || $lot->reversed_by_volume_entry_id !== $expected[$id][1]) {
+                if ($lot === null || (string) $lot->remaining_millionths !== $expected[$id]['expected'] || $lot->reversed_by_volume_entry_id !== null) {
                     throw InvalidBinaryPairingState::changed($this->plan->component, "carry lot [{$id}] is no longer as it was read");
                 }
+            }
+        }
+    }
+
+    /**
+     * What earlier corrections had released of every allocation this run
+     * undoes, compared with what the calculation read.
+     */
+    private function checkReleases(Connection $db): void
+    {
+        $expected = $this->plan->releases();
+        $stored = [];
+
+        foreach ([self::CORRECTIONS => 'invalidated_allocation_id', self::RESTORATIONS => 'restored_allocation_id'] as $table => $column) {
+            foreach (array_chunk(array_keys($expected), self::CHUNK) as $chunk) {
+                foreach ($db->table($table)->whereIn($column, $chunk)->get([$column, 'quantity_millionths']) as $row) {
+                    $stored[$table][$row->{$column}] = PairingArithmetic::add($stored[$table][$row->{$column}] ?? '0', (string) $row->quantity_millionths);
+                }
+            }
+        }
+
+        foreach ($expected as $allocation => [$invalidated, $restored]) {
+            if (($stored[self::CORRECTIONS][$allocation] ?? '0') !== $invalidated || ($stored[self::RESTORATIONS][$allocation] ?? '0') !== $restored) {
+                throw InvalidBinaryPairingState::changed($this->plan->component, "allocation [{$allocation}] was corrected since it was read");
             }
         }
     }
@@ -155,34 +182,72 @@ final readonly class BinaryPairingStateTransition implements CommissionStateTran
         return $ids;
     }
 
-    private function drawDownStoredLots(Connection $db, mixed $now): void
+    /**
+     * Each stored lot as the run leaves it: what it holds, and the reversal
+     * that took it back, if one did.
+     */
+    private function changeStoredLots(Connection $db, mixed $now): void
     {
-        $byReversal = [];
-
-        foreach ($this->plan->reversedLots() as $id => $lot) {
-            $byReversal[$lot['reversal']][] = $id;
-        }
-
-        foreach ($byReversal as $reversal => $ids) {
-            foreach (array_chunk($ids, self::CHUNK) as $chunk) {
-                $db->table(self::LOTS)->whereIn('id', $chunk)->update(['remaining_millionths' => 0, 'reversed_by_volume_entry_id' => $reversal, 'updated_at' => $now]);
-            }
-        }
-
-        $emptied = [];
-
-        foreach ($this->plan->consumedLots() as $id => $lot) {
-            if ($lot['remaining'] === '0') {
-                $emptied[] = $id;
-
+        foreach ($this->plan->storedLots() as $id => $lot) {
+            if ($lot['remaining'] === $lot['expected'] && $lot['reversed_by'] === null) {
                 continue;
             }
 
-            $db->table(self::LOTS)->where('id', $id)->update(['remaining_millionths' => $lot['remaining'], 'updated_at' => $now]);
+            $db->table(self::LOTS)->where('id', $id)->update([
+                'remaining_millionths' => $lot['remaining'],
+                'reversed_by_volume_entry_id' => $lot['reversed_by'],
+                'updated_at' => $now,
+            ]);
+        }
+    }
+
+    /**
+     * Every undone pair, and what it gave back.
+     */
+    private function storeCorrections(Connection $db, CalculationRun $run, mixed $now): void
+    {
+        $corrections = [];
+        $restorations = [];
+
+        foreach ($this->plan->corrections() as $correction) {
+            $id = (new BinaryPairingCorrection)->newUniqueId();
+            $corrections[] = [
+                'id' => $id,
+                'program_id' => $this->plan->program,
+                'plan_component_id' => $this->plan->component,
+                'calculation_run_id' => $run->getKey(),
+                'reversal_volume_entry_id' => $correction['reversal'],
+                'original_volume_entry_id' => $correction['original'],
+                'binary_pairing_result_id' => $correction['result'],
+                'invalidated_allocation_id' => $correction['allocation'],
+                'member_id' => $correction['member'],
+                'invalidated_side' => $correction['side']->value,
+                'quantity_millionths' => $correction['quantity'],
+                'commission_id' => $correction['commission'],
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+
+            foreach ($correction['restorations'] as $restoration) {
+                $restorations[] = [
+                    'id' => (new BinaryPairingRestoration)->newUniqueId(),
+                    'binary_pairing_correction_id' => $id,
+                    'restored_allocation_id' => $restoration['allocation'],
+                    'binary_carry_lot_id' => $restoration['lot'],
+                    'side' => $restoration['side']->value,
+                    'quantity_millionths' => $restoration['quantity'],
+                    'created_at' => $now,
+                    'updated_at' => $now,
+                ];
+            }
         }
 
-        foreach (array_chunk($emptied, self::CHUNK) as $chunk) {
-            $db->table(self::LOTS)->whereIn('id', $chunk)->update(['remaining_millionths' => 0, 'updated_at' => $now]);
+        foreach (array_chunk($corrections, self::CHUNK) as $chunk) {
+            $db->table(self::CORRECTIONS)->insert($chunk);
+        }
+
+        foreach (array_chunk($restorations, self::CHUNK) as $chunk) {
+            $db->table(self::RESTORATIONS)->insert($chunk);
         }
     }
 

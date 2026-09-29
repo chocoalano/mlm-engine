@@ -75,10 +75,10 @@ final readonly class BinaryPairingSourceEvents
 
     /**
      * Every reversal of the type whose own moment is in [from, until) and
-     * whose original's moment is in [earliest, before): its id, and its
-     * original's.
+     * whose original's moment is in [earliest, before): its id and moment,
+     * and its original's id.
      *
-     * @return Generator<int, object{reversal_id: string, original_id: string}>
+     * @return Generator<int, object{reversal_id: string, reversal_effective_at: string, original_id: string}>
      */
     public function reversals(Connection $db, string $programId, string $type, CarbonImmutable $from, CarbonImmutable $until, CarbonImmutable $earliest, CarbonImmutable $before): Generator
     {
@@ -96,7 +96,7 @@ final readonly class BinaryPairingSourceEvents
                 ->when($last !== null, static fn (Builder $query): Builder => $query->where('reversals.id', '>', $last))
                 ->orderBy('reversals.id')
                 ->limit(self::CHUNK)
-                ->get(['reversals.id as reversal_id', 'originals.id as original_id']);
+                ->get(['reversals.id as reversal_id', 'reversals.effective_at as reversal_effective_at', 'originals.id as original_id']);
 
             yield from $rows;
 

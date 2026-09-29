@@ -320,6 +320,32 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         fwrite(STDERR, sprintf("[pairing race %s] %s => %s\n", ExternalDatabase::selected()?->engine ?? '?', $key, $b['ok'] ? 'ok' : $b['exception']));
     }
 
+    /**
+     * Two runs of one range that undoes an earlier pair (ADR-025): the
+     * pair is undone, and its carry given back, once.
+     */
+    public function test_racing_runs_that_undo_a_pair_undo_it_once(): void
+    {
+        $component = $this->pairingRace();
+        $this->calculate($component, '2026-01-01 00:00:00', '2026-02-01 00:00:00', 'jan');
+        $this->reverse(VolumeEntry::query()->where('idempotency_key', 'l1')->sole(), 'l1-refund', at: CarbonImmutable::parse('2026-02-05'));
+
+        $this->closeGate('mlm_binary_pairing_results');
+        $first = $this->start(['op' => 'calculate', 'component' => $component->id, 'from' => '2026-02-01 00:00:00', 'until' => '2026-03-01 00:00:00', 'key' => 'feb:a']);
+        $this->awaitWaitingOn(['mlm_binary_pairing_results']);
+        $second = $this->start(['op' => 'calculate', 'component' => $component->id, 'from' => '2026-02-01 00:00:00', 'until' => '2026-03-01 00:00:00', 'key' => 'feb:b']);
+        $this->awaitWaitingOn(['mlm_binary_pairing_results', 'mlm_']);
+
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused([$this->finish($first), $this->finish($second)], InvalidBinaryPairingRange::class, 'already calculated through');
+        $this->assertSame([1, 1], [DB::table('mlm_binary_pairing_corrections')->count(), DB::table('mlm_binary_pairing_restorations')->count()]);
+        $this->assertSame('100000000', (string) DB::table('mlm_binary_pairing_corrections')->value('quantity_millionths'));
+        // The reversed source holds nothing; R's 120 and 180 are carry again.
+        $source = DB::table('mlm_binary_carry_lots')->where('source_volume_entry_id', VolumeEntry::query()->where('idempotency_key', 'l1')->value('id'))->sole();
+        $this->assertSame(['0', true], [(string) $source->remaining_millionths, $source->reversed_by_volume_entry_id !== null]);
+    }
+
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
     {
         $program = $this->members(Program::factory()->create(), 'M1', 'M2', 'M3', 'M4');

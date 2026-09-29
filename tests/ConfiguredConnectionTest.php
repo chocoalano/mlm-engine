@@ -15,7 +15,9 @@ use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\BinaryCarryLot;
 use PandaBear\Mlm\Models\BinaryPairingAllocation;
+use PandaBear\Mlm\Models\BinaryPairingCorrection;
 use PandaBear\Mlm\Models\BinaryPairingCursor;
+use PandaBear\Mlm\Models\BinaryPairingRestoration;
 use PandaBear\Mlm\Models\BinaryPairingResult;
 use PandaBear\Mlm\Models\BinaryPlacementPosition;
 use PandaBear\Mlm\Models\CalculationRun;
@@ -62,9 +64,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class];
 
     protected function defineEnvironment($app): void
     {
@@ -221,7 +223,7 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->binary()->place($members['Charlie'], $members['Alice'], BinarySide::Right);
         $this->travelBack();
         $component = $this->fixedComponent('binary.pairing.fixed', ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10'], $plan);
-        $this->sale($members['Bob'], '250', '2026-01-10', 'order:ORD-1');
+        $sale = $this->sale($members['Bob'], '250', '2026-01-10', 'order:ORD-1');
         $this->sale($members['Charlie'], '120', '2026-01-10', 'order:ORD-2');
 
         // Everything exists only on [mlm]: a read or write on the default
@@ -235,7 +237,17 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(3, DB::connection('mlm')->table('mlm_binary_carry_lots')->count());
         $this->assertSame(5, BinaryPairingAllocation::query()->count());
         $this->assertSame('2026-03-01 00:00:00', BinaryPairingCursor::query()->sole()->through_at->format('Y-m-d H:i:s'));
+
+        // March: Bob's sale, paired twice, is reversed; its pairs are undone
+        // and Charlie's side gets its carry back — all on [mlm].
+        $this->reverse($sale, 'refund:RF-1', at: CarbonImmutable::parse('2026-03-05 00:00:00'));
+        $this->monthly($component, '2026-03');
+
+        $this->assertSame([2, 3], [BinaryPairingCorrection::query()->count(), BinaryPairingRestoration::query()->count()]);
+        // Charlie's 120 and 180 are all carry again; Bob's lot holds nothing.
+        $this->assertSame(['300000000', '0'], [(string) DB::connection('mlm')->table('mlm_binary_carry_lots')->where('member_id', $members['Alice']->id)->where('side', 'right')->sum('remaining_millionths'), (string) DB::connection('mlm')->table('mlm_binary_carry_lots')->where('source_volume_entry_id', $sale->id)->value('remaining_millionths')]);
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_binary_carry_lots'));
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_binary_pairing_corrections'));
     }
 
     public function test_volume_is_recorded_reversed_and_totalled_on_the_configured_connection(): void

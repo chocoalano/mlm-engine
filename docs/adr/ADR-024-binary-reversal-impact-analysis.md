@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.4A.
+Accepted — Phase 3.4A. Amended in Phase 3.4B: consumption is net of what corrections released — allocated, invalidated, restored and net quantities are reported (ADR-025).
 
 ## Context
 

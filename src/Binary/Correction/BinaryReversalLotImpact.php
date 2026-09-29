@@ -7,7 +7,8 @@ namespace PandaBear\Mlm\Binary\Correction;
 /**
  * One carry lot the reversed entry created — in one binary member's leg,
  * for one pairing component — with its exact quantity, what remains, what
- * pairings consumed, and every consumption in order.
+ * pairings allocated of it, what corrections released of that (ADR-025),
+ * the net still consumed, and every consumption in order.
  */
 final readonly class BinaryReversalLotImpact
 {
@@ -24,6 +25,9 @@ final readonly class BinaryReversalLotImpact
         public string $consumedQuantity,
         public BinaryReversalLotState $state,
         public array $consumptions,
+        public ?string $allocatedQuantity = null,
+        public string $invalidatedQuantity = '0',
+        public string $restoredQuantity = '0',
     ) {}
 
     /**
@@ -38,6 +42,9 @@ final readonly class BinaryReversalLotImpact
             'side' => $this->side,
             'original_quantity' => $this->originalQuantity,
             'remaining_quantity' => $this->remainingQuantity,
+            'allocated_quantity' => $this->allocatedQuantity ?? $this->consumedQuantity,
+            'invalidated_quantity' => $this->invalidatedQuantity,
+            'restored_quantity' => $this->restoredQuantity,
             'consumed_quantity' => $this->consumedQuantity,
             'state' => $this->state->value,
             'consumptions' => array_map(static fn (BinaryReversalConsumptionImpact $consumption): array => $consumption->toArray(), $this->consumptions),

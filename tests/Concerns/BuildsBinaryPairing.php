@@ -82,6 +82,9 @@ trait BuildsBinaryPairing
                 'right' => "{$row->right_carry_before} + {$row->right_added} - {$row->right_reversed} = {$row->right_available} -> {$row->right_carry_after}",
                 'pairs' => "{$row->pair_count} x {$row->pair_quantity} = {$row->consumed_quantity}",
                 'commission' => $row->commission_id !== null,
+                // Only when a correction gave carry back: then available is
+                // before + added + restored - reversed.
+                ...($row->left_restored === '0' && $row->right_restored === '0' ? [] : ['restored' => "left {$row->left_restored}, right {$row->right_restored}"]),
             ];
         }
 
@@ -146,7 +149,7 @@ trait BuildsBinaryPairing
     {
         $state = [];
 
-        foreach (['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_calculation_runs', 'mlm_commissions'] as $table) {
+        foreach (['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_calculation_runs', 'mlm_commissions'] as $table) {
             $state[$table] = DB::table($table)->orderBy('id')->get()->map(static fn (object $row): array => (array) $row)->all();
         }
 

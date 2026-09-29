@@ -248,7 +248,7 @@ final class BinaryReversalImpactTest extends DatabaseTestCase
         DB::table('mlm_binary_carry_lots')->where('source_volume_entry_id', $sale->id)->update(['remaining_millionths' => 60_000_000]);
 
         $this->expectException(InvalidBinaryCorrection::class);
-        $this->expectExceptionMessage('its remainder 60000000 and pairings 100000000 do not add up to its 150000000 millionths');
+        $this->expectExceptionMessage('its remainder 60000000 and net pairings 100000000 do not add up to its 150000000 millionths');
 
         $this->analyze($reversal);
     }
@@ -294,6 +294,9 @@ final class BinaryReversalImpactTest extends DatabaseTestCase
             'commission_status' => 'calculated',
             'commission_amount' => '10',
             'commission_currency' => 'IDR',
+            'invalidated_quantity' => '0',
+            'restored_quantity' => '0',
+            'net_quantity' => '100',
         ], collect($array['lots'])->firstWhere('member_id', $this->members['P']->id)['consumptions'][0]);
     }
 

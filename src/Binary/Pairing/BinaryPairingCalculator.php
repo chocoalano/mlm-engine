@@ -9,10 +9,11 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use PandaBear\Mlm\Binary\BinarySide;
+use PandaBear\Mlm\Binary\Correction\BinaryAllocationHistory;
+use PandaBear\Mlm\Binary\Correction\BinaryConsumedReversalPlanner;
 use PandaBear\Mlm\Commission\CommissionCalculationContext;
 use PandaBear\Mlm\Commission\CommissionCandidate;
 use PandaBear\Mlm\Commission\StatefulCommissionCalculation;
-use PandaBear\Mlm\Exceptions\BinaryPairingCorrectionRequired;
 use PandaBear\Mlm\Exceptions\CorruptBinaryPlacement;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingState;
@@ -33,9 +34,12 @@ use PandaBear\Mlm\Volume\Quantity;
  *    a carry lot in each binary leg it fell in, as the binary tree stood at
  *    its own moment. An original already reversed before `until` is taken
  *    back at once. A reversal in the range of an original an earlier run
- *    took in takes back its lots — only while nothing of them was paired.
+ *    took in takes back what its lots still hold — and undoes the earlier
+ *    pairs they fed, giving the other side's quantity back to carry
+ *    (ADR-025).
  * 3. Then, once, at the run's close: for every binary member with carry or
- *    change, available = carry before + added − taken back on each side,
+ *    change, available = carry before + added + given back − taken back on
+ *    each side,
  *    pairs = ⌊min(left, right) ÷ pair quantity⌋, and each side gives up
  *    pairs × pair quantity, its oldest carry first.
  * 4. A member whose pairs earn a positive award gets one candidate, earned
@@ -54,7 +58,10 @@ final readonly class BinaryPairingCalculator
      */
     private const CHUNK = 500;
 
-    public function __construct(private BinaryPairingSourceEvents $events) {}
+    public function __construct(
+        private BinaryPairingSourceEvents $events,
+        private BinaryConsumedReversalPlanner $corrections,
+    ) {}
 
     public function calculate(string $strategy, CommissionCalculationContext $context, BinaryPairingParameters $parameters): StatefulCommissionCalculation
     {
@@ -187,51 +194,65 @@ final readonly class BinaryPairingCalculator
     }
 
     /**
-     * Reversals in the range of originals an earlier run took in: their lots
-     * are taken back if still wholly unpaired, and stop the run otherwise.
-     * An original before the component's state began was never taken in;
-     * one in this run was handled with it; one after this run is not yet.
+     * Reversals in the range of originals an earlier run took in: each takes
+     * back what its lots still hold and undoes the pairs they fed, in a
+     * stable order — by the reversal's moment, then its id, then its
+     * original's — so a pair both of whose sources are reversed is undone
+     * once. An original before the component's state began was never taken
+     * in; one in this run was handled with it; one after this run is not
+     * yet.
      */
     private function takeBackReversals(Connection $db, BinaryPairingPlan $plan, string $type, CarbonImmutable $from, CarbonImmutable $until, CarbonImmutable $startedAt): void
     {
-        $reversals = [];
+        $reversals = [...$this->events->reversals($db, $plan->program, $type, $from, $until, $startedAt, $from)];
 
-        foreach ($this->events->reversals($db, $plan->program, $type, $from, $until, $startedAt, $from) as $row) {
-            $reversals[(string) $row->original_id] = (string) $row->reversal_id;
+        if ($reversals === []) {
+            return;
         }
 
-        foreach (array_chunk(array_keys($reversals), self::CHUNK, true) as $originals) {
-            $lots = $db->table(self::LOTS)
+        usort($reversals, fn (object $a, object $b): int => [$this->moment($a->reversal_effective_at), (string) $a->reversal_id, (string) $a->original_id]
+            <=> [$this->moment($b->reversal_effective_at), (string) $b->reversal_id, (string) $b->original_id]);
+
+        $lots = [];
+
+        foreach (array_chunk(array_map(static fn (object $row): string => (string) $row->original_id, $reversals), self::CHUNK) as $originals) {
+            $rows = $db->table(self::LOTS)
                 ->where('plan_component_id', $plan->component)
                 ->where('program_id', $plan->program)
                 ->whereIn('source_volume_entry_id', $originals)
-                ->orderBy('source_volume_entry_id')
                 ->orderBy('member_id')
-                ->get(['id', 'member_id', 'side', 'source_volume_entry_id', 'quantity_millionths', 'remaining_millionths', 'reversed_by_volume_entry_id']);
+                ->orderBy('side')
+                ->orderBy('id')
+                ->get();
 
-            foreach ($lots as $lot) {
-                $reversal = $reversals[$lot->source_volume_entry_id];
+            foreach ($rows as $lot) {
+                $lots[(string) $lot->source_volume_entry_id][] = $lot;
+            }
+        }
 
+        // Only lots something was ever drawn from have pairs to undo.
+        $drawn = [];
+
+        foreach ($lots as $ofOriginal) {
+            foreach ($ofOriginal as $lot) {
+                if ((string) $lot->remaining_millionths !== (string) $lot->quantity_millionths) {
+                    $drawn[] = (string) $lot->id;
+                }
+            }
+        }
+
+        $history = BinaryAllocationHistory::load($db, $drawn, opposites: true);
+
+        foreach ($reversals as $reversal) {
+            foreach ($lots[(string) $reversal->original_id] ?? [] as $lot) {
                 if ($lot->reversed_by_volume_entry_id !== null) {
                     throw InvalidBinaryPairingState::corrupt($plan->component, "carry lot [{$lot->id}] was already taken back by [{$lot->reversed_by_volume_entry_id}]");
                 }
 
-                $quantity = (string) $lot->quantity_millionths;
-                $remaining = (string) $lot->remaining_millionths;
-
-                if ($remaining !== $quantity) {
-                    throw BinaryPairingCorrectionRequired::consumed(
-                        $plan->component,
-                        (string) $lot->member_id,
-                        (string) $lot->side,
-                        (string) $lot->source_volume_entry_id,
-                        PairingArithmetic::quantity(PairingArithmetic::subtract($quantity, $remaining)),
-                        $reversal,
-                    );
-                }
-
                 $side = BinarySide::parse($lot->side) ?? throw CorruptBinaryPlacement::side((string) $lot->id, $lot->side);
-                $plan->reverseLot((string) $lot->id, (string) $lot->member_id, $side, $quantity, $reversal);
+                $plan->storedLot((string) $lot->id, (string) $lot->member_id, $side, (string) $lot->source_effective_at, (string) $lot->source_volume_entry_id, (string) $lot->remaining_millionths);
+                $this->corrections->undo($plan, $history, $lot, (string) $reversal->reversal_id, (string) $reversal->original_id);
+                $plan->reverseStored((string) $lot->id, (string) $reversal->reversal_id);
             }
         }
     }
@@ -259,26 +280,26 @@ final readonly class BinaryPairingCalculator
     /**
      * Takes `$quantity` from the member's carry on one side, oldest source
      * first — stored lots, then this run's — and records every lot it
-     * draws on.
+     * draws on. A stored lot is taken as the run leaves it so far: nothing
+     * of one a reversal took back, and all a correction gave back.
      */
     private function consume(Connection $db, BinaryPairingPlan $plan, string $member, BinarySide $side, string $quantity): void
     {
         $needed = $quantity;
+        $revived = $plan->revived($member, $side);
         $last = null;
 
         // Stored lots are older than this run's: they came from earlier runs.
-        // A side with no stored carry has none to read.
-        do {
-            if (! $plan->carries($member, $side)) {
-                break;
-            }
-
+        // A side with no stored carry, and none given back, has none to read.
+        while ($plan->carries($member, $side) || $revived !== []) {
             $lots = $db->table(self::LOTS)
                 ->where('plan_component_id', $plan->component)
                 ->where('program_id', $plan->program)
                 ->where('member_id', $member)
                 ->where('side', $side->value)
-                ->where('remaining_millionths', '>', 0)
+                ->where(static fn (Builder $open): Builder => $open
+                    ->where('remaining_millionths', '>', 0)
+                    ->when($revived !== [], static fn (Builder $query): Builder => $query->orWhereIn('id', array_keys($revived))))
                 ->when($last !== null, static fn (Builder $query): Builder => $query->where(static fn (Builder $after): Builder => $after
                     ->where('source_effective_at', '>', $last->source_effective_at)
                     ->orWhere(static fn (Builder $same): Builder => $same
@@ -290,13 +311,16 @@ final readonly class BinaryPairingCalculator
                 ->get(['id', 'source_effective_at', 'source_volume_entry_id', 'remaining_millionths']);
 
             foreach ($lots as $lot) {
-                // Taken back by a reversal in this run: nothing left to pair.
-                if ($plan->isReversed((string) $lot->id)) {
+                $id = (string) $lot->id;
+                $plan->storedLot($id, $member, $side, (string) $lot->source_effective_at, (string) $lot->source_volume_entry_id, (string) $lot->remaining_millionths);
+                $held = (string) $plan->remainingOf($id);
+
+                if ($held === '0') {
                     continue;
                 }
 
-                $take = PairingArithmetic::min((string) $lot->remaining_millionths, $needed);
-                $plan->consumeStored((string) $lot->id, $member, $side, (string) $lot->remaining_millionths, $take);
+                $take = PairingArithmetic::min($held, $needed);
+                $plan->consumeStored($id, $member, $side, $take);
                 $needed = PairingArithmetic::subtract($needed, $take);
 
                 if ($needed === '0') {
@@ -304,8 +328,12 @@ final readonly class BinaryPairingCalculator
                 }
             }
 
+            if ($lots->count() < self::CHUNK) {
+                break;
+            }
+
             $last = $lots->last();
-        } while ($lots->count() === self::CHUNK);
+        }
 
         $needed = $plan->consumeNew($member, $side, $needed);
 

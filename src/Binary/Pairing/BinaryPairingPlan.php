@@ -11,9 +11,10 @@ use PandaBear\Mlm\Exceptions\InvalidBinaryPairingState;
 /**
  * @internal
  *
- * Everything one binary pairing run decided, as data (ADR-023): the cursor
- * it read, the lots it takes in and back, what each member's pairs consume
- * lot by lot, and each member's result. Built while calculating, applied by
+ * Everything one binary pairing run decided, as data (ADR-023, ADR-025):
+ * the cursor it read, the lots it takes in and back, the earlier pairs it
+ * undoes and the carry that gives back, what each member's pairs consume lot
+ * by lot, and each member's result. Built while calculating, applied by
  * `BinaryPairingStateTransition`; quantities are whole millionths as exact
  * decimal digits.
  */
@@ -34,24 +35,34 @@ final class BinaryPairingPlan
     private array $newLotsBySide = [];
 
     /**
-     * Stored lots taken back whole by a reversal in this run, by id.
+     * Stored lots this run changes, by id: what it read of them, and what it
+     * leaves — taken back by a reversal, given back by a correction, drawn
+     * on by its pairs.
      *
-     * @var array<string, array{quantity: string, reversal: string}>
+     * @var array<string, array{member: string, side: BinarySide, effective_at: string, entry: string, expected: string, remaining: string, reversed_by: ?string}>
      */
-    private array $reversedLots = [];
+    private array $storedLots = [];
 
     /**
-     * Stored lots this run's pairs draw on, by id: what they held, and what
-     * they keep.
+     * Earlier pairs this run undoes, in the order it undoes them.
      *
-     * @var array<string, array{expected: string, remaining: string}>
+     * @var list<array{reversal: string, original: string, result: string, allocation: string, member: string, side: BinarySide, quantity: string, commission: ?string, restorations: list<array{allocation: string, lot: string, side: BinarySide, quantity: string}>}>
      */
-    private array $consumedLots = [];
+    private array $corrections = [];
 
     /**
-     * By member: carry before, added and taken back, by side.
+     * What earlier corrections had released of each allocation this run's
+     * corrections read, as read: invalidated and restored millionths.
      *
-     * @var array<string, array{before: array<string, string>, added: array<string, string>, reversed: array<string, string>}>
+     * @var array<string, array{string, string}>
+     */
+    private array $releases = [];
+
+    /**
+     * By member: carry before, added, given back by corrections and taken
+     * back by reversals, by side.
+     *
+     * @var array<string, array{before: array<string, string>, added: array<string, string>, restored: array<string, string>, reversed: array<string, string>}>
      */
     private array $members = [];
 
@@ -109,15 +120,94 @@ final class BinaryPairingPlan
         }
     }
 
-    public function reverseLot(string $lot, string $member, BinarySide $side, string $quantity, string $reversal): void
+    /**
+     * Registers a stored lot the run changes, as it read it — once.
+     */
+    public function storedLot(string $lot, string $member, BinarySide $side, string $effectiveAt, string $entry, string $held): void
     {
-        $this->reversedLots[$lot] = ['quantity' => $quantity, 'reversal' => $reversal];
-        $this->add($member, 'reversed', $side, $quantity);
+        $this->storedLots[$lot] ??= [
+            'member' => $member,
+            'side' => $side,
+            'effective_at' => substr($effectiveAt, 0, 19),
+            'entry' => $entry,
+            'expected' => $held,
+            'remaining' => $held,
+            'reversed_by' => null,
+        ];
+    }
+
+    /**
+     * What a registered stored lot holds as planned so far; null for one the
+     * run has not touched.
+     */
+    public function remainingOf(string $lot): ?string
+    {
+        return $this->storedLots[$lot]['remaining'] ?? null;
+    }
+
+    /**
+     * Takes back what a registered stored lot still holds: its source was
+     * reversed.
+     */
+    public function reverseStored(string $lot, string $reversal): void
+    {
+        $stored = $this->storedLots[$lot];
+        $this->add($stored['member'], 'reversed', $stored['side'], $stored['remaining']);
+        $this->storedLots[$lot]['remaining'] = '0';
+        $this->storedLots[$lot]['reversed_by'] = $reversal;
+    }
+
+    /**
+     * Gives quantity back to a registered stored lot: an earlier pair it was
+     * drawn into is undone.
+     */
+    public function restoreStored(string $lot, string $quantity): void
+    {
+        $stored = $this->storedLots[$lot];
+        $this->add($stored['member'], 'restored', $stored['side'], $quantity);
+        $this->storedLots[$lot]['remaining'] = PairingArithmetic::add($stored['remaining'], $quantity);
     }
 
     public function isReversed(string $lot): bool
     {
-        return isset($this->reversedLots[$lot]);
+        return ($this->storedLots[$lot]['reversed_by'] ?? null) !== null;
+    }
+
+    /**
+     * Stored lots of the member's side that held nothing when read and hold
+     * carry again because a correction gave it back — lots a read of open
+     * carry does not find.
+     *
+     * @return array<string, array{effective_at: string, entry: string}> by id
+     */
+    public function revived(string $member, BinarySide $side): array
+    {
+        $revived = [];
+
+        foreach ($this->storedLots as $id => $lot) {
+            if ($lot['member'] === $member && $lot['side'] === $side && $lot['expected'] === '0' && $lot['remaining'] !== '0' && $lot['reversed_by'] === null) {
+                $revived[$id] = ['effective_at' => $lot['effective_at'], 'entry' => $lot['entry']];
+            }
+        }
+
+        return $revived;
+    }
+
+    /**
+     * @param  array{reversal: string, original: string, result: string, allocation: string, member: string, side: BinarySide, quantity: string, commission: ?string, restorations: list<array{allocation: string, lot: string, side: BinarySide, quantity: string}>}  $correction
+     */
+    public function correct(array $correction): void
+    {
+        $this->corrections[] = $correction;
+    }
+
+    /**
+     * Records what earlier corrections had released of an allocation, as
+     * read — once, before this run releases more.
+     */
+    public function expectRelease(string $allocation, string $invalidated, string $restored): void
+    {
+        $this->releases[$allocation] ??= [$invalidated, $restored];
     }
 
     public function carry(string $member, BinarySide $side, string $quantity): void
@@ -157,14 +247,17 @@ final class BinaryPairingPlan
     public function available(string $member, BinarySide $side): string
     {
         return PairingArithmetic::subtract(
-            PairingArithmetic::add($this->of($member, 'before', $side), $this->of($member, 'added', $side)),
+            PairingArithmetic::add(PairingArithmetic::add($this->of($member, 'before', $side), $this->of($member, 'added', $side)), $this->of($member, 'restored', $side)),
             $this->of($member, 'reversed', $side),
         );
     }
 
-    public function consumeStored(string $lot, string $member, BinarySide $side, string $held, string $quantity): void
+    /**
+     * Draws on a registered stored lot.
+     */
+    public function consumeStored(string $lot, string $member, BinarySide $side, string $quantity): void
     {
-        $this->consumedLots[$lot] = ['expected' => $held, 'remaining' => PairingArithmetic::subtract($held, $quantity)];
+        $this->storedLots[$lot]['remaining'] = PairingArithmetic::subtract($this->storedLots[$lot]['remaining'], $quantity);
         $this->allocations[$member][] = ['lot' => $lot, 'stored' => true, 'side' => $side, 'quantity' => $quantity];
     }
 
@@ -231,6 +324,7 @@ final class BinaryPairingPlan
         foreach (BinarySide::cases() as $side) {
             $trace["{$side->value}_before"] = PairingArithmetic::quantity($this->of($member, 'before', $side));
             $trace["{$side->value}_added"] = PairingArithmetic::quantity($this->of($member, 'added', $side));
+            $trace["{$side->value}_restored"] = PairingArithmetic::quantity($this->of($member, 'restored', $side));
             $trace["{$side->value}_reversed"] = PairingArithmetic::quantity($this->of($member, 'reversed', $side));
             $trace["{$side->value}_after"] = PairingArithmetic::quantity(PairingArithmetic::subtract($this->available($member, $side), $this->consumed($member)));
         }
@@ -247,19 +341,27 @@ final class BinaryPairingPlan
     }
 
     /**
-     * @return array<string, array{quantity: string, reversal: string}>
+     * @return array<string, array{member: string, side: BinarySide, effective_at: string, entry: string, expected: string, remaining: string, reversed_by: ?string}>
      */
-    public function reversedLots(): array
+    public function storedLots(): array
     {
-        return $this->reversedLots;
+        return $this->storedLots;
     }
 
     /**
-     * @return array<string, array{expected: string, remaining: string}>
+     * @return list<array{reversal: string, original: string, result: string, allocation: string, member: string, side: BinarySide, quantity: string, commission: ?string, restorations: list<array{allocation: string, lot: string, side: BinarySide, quantity: string}>}>
      */
-    public function consumedLots(): array
+    public function corrections(): array
     {
-        return $this->consumedLots;
+        return $this->corrections;
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public function releases(): array
+    {
+        return $this->releases;
     }
 
     /**
@@ -278,6 +380,7 @@ final class BinaryPairingPlan
             foreach (BinarySide::cases() as $side) {
                 $row["{$side->value}_carry_before"] = PairingArithmetic::quantity($this->of($member, 'before', $side));
                 $row["{$side->value}_added"] = PairingArithmetic::quantity($this->of($member, 'added', $side));
+                $row["{$side->value}_restored"] = PairingArithmetic::quantity($this->of($member, 'restored', $side));
                 $row["{$side->value}_reversed"] = PairingArithmetic::quantity($this->of($member, 'reversed', $side));
                 $row["{$side->value}_available"] = PairingArithmetic::quantity($this->available($member, $side));
                 $row["{$side->value}_carry_after"] = PairingArithmetic::quantity(PairingArithmetic::subtract($this->available($member, $side), $settled['consumed']));
@@ -305,7 +408,7 @@ final class BinaryPairingPlan
 
     private function add(string $member, string $field, BinarySide $side, string $quantity): void
     {
-        $this->members[$member] ??= ['before' => [], 'added' => [], 'reversed' => []];
+        $this->members[$member] ??= ['before' => [], 'added' => [], 'restored' => [], 'reversed' => []];
         $this->members[$member][$field][$side->value] = PairingArithmetic::add($this->members[$member][$field][$side->value] ?? '0', $quantity);
     }
 

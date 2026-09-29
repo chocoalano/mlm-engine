@@ -16,7 +16,8 @@ use PandaBear\Mlm\Volume\Quantity;
  * Answers, read-only, what a volume reversal reaches in binary pairing
  * (ADR-024): every carry lot its original created, in every component and
  * binary member's leg; how much of each remains and how much pairings
- * consumed; which pairing results, runs and commissions consumed it.
+ * consumed — net of what later corrections released (ADR-025); which
+ * pairing results, runs and commissions consumed it.
  *
  * The stored allocations are the history: nothing is recalculated — no
  * pairing, genealogy, pair count, amount or rounding — and nothing is
@@ -28,14 +29,6 @@ use PandaBear\Mlm\Volume\Quantity;
  */
 final readonly class BinaryReversalImpactAnalyzer
 {
-    private const LOTS = 'mlm_binary_carry_lots';
-
-    private const ALLOCATIONS = 'mlm_binary_pairing_allocations';
-
-    private const RESULTS = 'mlm_binary_pairing_results';
-
-    private const RUNS = 'mlm_calculation_runs';
-
     private const COMMISSIONS = 'mlm_commissions';
 
     private const CHUNK = 500;
@@ -48,7 +41,7 @@ final readonly class BinaryReversalImpactAnalyzer
         $db = $reversal->getConnection();
         [$reversal, $original] = $this->entries($db, (string) $reversal->getKey());
 
-        $lots = $db->table(self::LOTS)
+        $lots = $db->table('mlm_binary_carry_lots')
             ->where('source_volume_entry_id', $original->getKey())
             ->orderBy('plan_component_id')
             ->orderBy('member_id')
@@ -56,11 +49,12 @@ final readonly class BinaryReversalImpactAnalyzer
             ->orderBy('id')
             ->get();
 
-        $consumptions = $this->consumptions($db, $lots->pluck('id')->map(static fn (mixed $id): string => (string) $id)->all());
+        $history = BinaryAllocationHistory::load($db, $lots->pluck('id')->map(static fn (mixed $id): string => (string) $id)->all());
+        $commissions = $this->commissions($db, array_values(array_filter(array_column($history->results, 'commission_id'))));
         $impacts = [];
 
         foreach ($lots as $lot) {
-            $impacts[] = $this->lot($lot, $original, $reversal, $consumptions[$lot->id] ?? []);
+            $impacts[] = $this->lot($lot, $original, $reversal, $history, $commissions);
         }
 
         return new BinaryReversalImpact(
@@ -106,50 +100,28 @@ final readonly class BinaryReversalImpactAnalyzer
     }
 
     /**
-     * Every allocation of the lots, with its pairing result, run and
-     * commission — a few queries per chunk of lots, never one per
-     * allocation.
+     * The commissions the pairings earned, by id.
      *
-     * @param  list<string>  $lotIds
-     * @return array<string, list<array{object, object, object, ?object}>> by lot, in consumption order
+     * @param  list<string>  $ids
+     * @return array<string, object>
      */
-    private function consumptions(Connection $db, array $lotIds): array
+    private function commissions(Connection $db, array $ids): array
     {
-        $allocations = [];
+        $rows = [];
 
-        foreach (array_chunk($lotIds, self::CHUNK) as $chunk) {
-            foreach ($db->table(self::ALLOCATIONS)->whereIn('binary_carry_lot_id', $chunk)->get() as $allocation) {
-                $allocations[] = $allocation;
+        foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
+            foreach ($db->table(self::COMMISSIONS)->whereIn('id', $chunk)->get() as $row) {
+                $rows[(string) $row->id] = $row;
             }
         }
 
-        $results = $this->byId($db, self::RESULTS, array_column($allocations, 'binary_pairing_result_id'));
-        $runs = $this->byId($db, self::RUNS, array_column($results, 'calculation_run_id'));
-        $commissions = $this->byId($db, self::COMMISSIONS, array_values(array_filter(array_column($results, 'commission_id'))));
-        $byLot = [];
-
-        foreach ($allocations as $allocation) {
-            $result = $results[$allocation->binary_pairing_result_id];
-            $byLot[$allocation->binary_carry_lot_id][] = [
-                $allocation,
-                $result,
-                $runs[$result->calculation_run_id],
-                $result->commission_id === null ? null : $commissions[$result->commission_id],
-            ];
-        }
-
-        foreach ($byLot as &$rows) {
-            usort($rows, static fn (array $a, array $b): int => [(string) $a[2]->from_at, (string) $a[2]->until_at, $a[2]->id, $a[1]->id, $a[0]->id]
-                <=> [(string) $b[2]->from_at, (string) $b[2]->until_at, $b[2]->id, $b[1]->id, $b[0]->id]);
-        }
-
-        return $byLot;
+        return $rows;
     }
 
     /**
-     * @param  list<array{object, object, object, ?object}>  $consumptions
+     * @param  array<string, object>  $commissions
      */
-    private function lot(object $lot, VolumeEntry $original, VolumeEntry $reversal, array $consumptions): BinaryReversalLotImpact
+    private function lot(object $lot, VolumeEntry $original, VolumeEntry $reversal, BinaryAllocationHistory $history, array $commissions): BinaryReversalLotImpact
     {
         $id = (string) $lot->id;
         $side = BinarySide::parse($lot->side) ?? throw InvalidBinaryCorrection::corruptLot($id, 'its side is '.var_export($lot->side, true));
@@ -164,21 +136,27 @@ final readonly class BinaryReversalImpactAnalyzer
             throw InvalidBinaryCorrection::corruptLot($id, "it holds {$remaining} of {$quantity} millionths");
         }
 
-        $consumed = '0';
+        $totals = ['allocated' => '0', 'invalidated' => '0', 'restored' => '0', 'net' => '0'];
         $impacts = [];
 
-        foreach ($consumptions as [$allocation, $result, $run, $commission]) {
-            $taken = (string) $allocation->quantity_millionths;
+        foreach ($history->ofLot($id) as $allocation) {
+            $result = $history->results[$allocation->binary_pairing_result_id];
+            $run = $history->runs[$result->calculation_run_id];
+            $commission = $result->commission_id === null ? null : $commissions[$result->commission_id];
+            $net = $history->net($allocation);
 
-            if (preg_match('/^[1-9]\d*$/D', $taken) !== 1 || $allocation->side !== $side->value || $result->plan_component_id !== $lot->plan_component_id || $result->member_id !== $lot->member_id) {
-                throw InvalidBinaryCorrection::corruptLot($id, "allocation [{$allocation->id}] does not draw on it as its pairing result's own carry");
+            if ($net === null || preg_match('/^[1-9]\d*$/D', $history->allocated($allocation)) !== 1 || $allocation->side !== $side->value || $result->plan_component_id !== $lot->plan_component_id || $result->member_id !== $lot->member_id) {
+                throw InvalidBinaryCorrection::corruptLot($id, "allocation [{$allocation->id}] does not draw on it as its pairing result's own carry, or was released more than it consumed");
             }
 
-            $consumed = PairingArithmetic::add($consumed, $taken);
+            foreach (['allocated' => $history->allocated($allocation), 'invalidated' => $history->invalidated($allocation), 'restored' => $history->restored($allocation), 'net' => $net] as $total => $value) {
+                $totals[$total] = PairingArithmetic::add($totals[$total], $value);
+            }
+
             $impacts[] = new BinaryReversalConsumptionImpact(
                 allocationId: (string) $allocation->id,
                 side: $side->value,
-                quantity: Quantity::fromMillionths($taken)->value(),
+                quantity: Quantity::fromMillionths($history->allocated($allocation))->value(),
                 pairingResultId: (string) $result->id,
                 calculationRunId: (string) $run->id,
                 runFrom: substr((string) $run->from_at, 0, 19),
@@ -189,6 +167,9 @@ final readonly class BinaryReversalImpactAnalyzer
                 commissionStatus: $commission === null ? null : (string) $commission->status,
                 commissionAmount: $commission === null ? null : FinancialAmount::fromMillionths((string) $commission->amount_millionths)->value(),
                 commissionCurrency: $commission === null ? null : (string) $commission->currency,
+                invalidatedQuantity: Quantity::fromMillionths($history->invalidated($allocation))->value(),
+                restoredQuantity: Quantity::fromMillionths($history->restored($allocation))->value(),
+                netQuantity: Quantity::fromMillionths($net)->value(),
             );
         }
 
@@ -199,16 +180,19 @@ final readonly class BinaryReversalImpactAnalyzer
             side: $side->value,
             originalQuantity: Quantity::fromMillionths($quantity)->value(),
             remainingQuantity: Quantity::fromMillionths($remaining)->value(),
-            consumedQuantity: Quantity::fromMillionths($consumed)->value(),
-            state: $this->state($id, $lot, $reversal, $quantity, $remaining, $consumed),
+            consumedQuantity: Quantity::fromMillionths($totals['net'])->value(),
+            state: $this->state($id, $lot, $reversal, $quantity, $remaining, $totals['net']),
             consumptions: $impacts,
+            allocatedQuantity: Quantity::fromMillionths($totals['allocated'])->value(),
+            invalidatedQuantity: Quantity::fromMillionths($totals['invalidated'])->value(),
+            restoredQuantity: Quantity::fromMillionths($totals['restored'])->value(),
         );
     }
 
     /**
      * The lot's state, once its numbers agree: an unreversed lot's remainder
-     * and consumption add up to its quantity; a lot taken back by this
-     * reversal was never paired and holds nothing.
+     * and net consumption add up to its quantity; a lot taken back by this
+     * reversal holds nothing, and whatever of it was paired has been undone.
      */
     private function state(string $id, object $lot, VolumeEntry $reversal, string $quantity, string $remaining, string $consumed): BinaryReversalLotState
     {
@@ -218,14 +202,14 @@ final readonly class BinaryReversalImpactAnalyzer
             }
 
             if ($remaining !== '0' || $consumed !== '0') {
-                throw InvalidBinaryCorrection::corruptLot($id, "it was taken back by this reversal, yet holds {$remaining} and had {$consumed} millionths paired");
+                throw InvalidBinaryCorrection::corruptLot($id, "it was taken back by this reversal, yet holds {$remaining} and has {$consumed} millionths still paired");
             }
 
             return BinaryReversalLotState::AlreadyRemoved;
         }
 
         if (PairingArithmetic::add($remaining, $consumed) !== $quantity) {
-            throw InvalidBinaryCorrection::corruptLot($id, "its remainder {$remaining} and pairings {$consumed} do not add up to its {$quantity} millionths");
+            throw InvalidBinaryCorrection::corruptLot($id, "its remainder {$remaining} and net pairings {$consumed} do not add up to its {$quantity} millionths");
         }
 
         return match (true) {
@@ -233,22 +217,5 @@ final readonly class BinaryReversalImpactAnalyzer
             $remaining === '0' => BinaryReversalLotState::FullyConsumed,
             default => BinaryReversalLotState::PartiallyConsumed,
         };
-    }
-
-    /**
-     * @param  list<string>  $ids
-     * @return array<string, object>
-     */
-    private function byId(Connection $db, string $table, array $ids): array
-    {
-        $rows = [];
-
-        foreach (array_chunk(array_values(array_unique($ids)), self::CHUNK) as $chunk) {
-            foreach ($db->table($table)->whereIn('id', $chunk)->get() as $row) {
-                $rows[(string) $row->id] = $row;
-            }
-        }
-
-        return $rows;
     }
 }

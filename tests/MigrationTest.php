@@ -10,6 +10,8 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PandaBear\Mlm\Binary\BinaryPlacementManager;
 use PandaBear\Mlm\Binary\BinarySide;
+use PandaBear\Mlm\Calculation\CalculationContext;
+use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Finance\LedgerAccountManager;
@@ -23,6 +25,7 @@ use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
@@ -42,9 +45,9 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
 
-    private const PAIRING_TABLES = ['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations'];
+    private const PAIRING_TABLES = ['mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations'];
 
     private const BUILT_IN_STRATEGIES = ['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'];
 
@@ -300,6 +303,18 @@ final class MigrationTest extends TestCase
             'a pairing result names its commission' => ['mlm_binary_pairing_results', 'commission_id', 'mlm_commissions'],
             'an allocation belongs to its result' => ['mlm_binary_pairing_allocations', 'binary_pairing_result_id', 'mlm_binary_pairing_results'],
             'an allocation draws on a carry lot' => ['mlm_binary_pairing_allocations', 'binary_carry_lot_id', 'mlm_binary_carry_lots'],
+            'a correction belongs to a program' => ['mlm_binary_pairing_corrections', 'program_id', 'mlm_programs'],
+            'a correction belongs to its component' => ['mlm_binary_pairing_corrections', 'plan_component_id', 'mlm_plan_components'],
+            'a correction names the run that made it' => ['mlm_binary_pairing_corrections', 'calculation_run_id', 'mlm_calculation_runs'],
+            'a correction names its reversal' => ['mlm_binary_pairing_corrections', 'reversal_volume_entry_id', 'mlm_volume_entries'],
+            'a correction names the reversed original' => ['mlm_binary_pairing_corrections', 'original_volume_entry_id', 'mlm_volume_entries'],
+            'a correction names the pairing it undoes' => ['mlm_binary_pairing_corrections', 'binary_pairing_result_id', 'mlm_binary_pairing_results'],
+            'a correction names the allocation it invalidates' => ['mlm_binary_pairing_corrections', 'invalidated_allocation_id', 'mlm_binary_pairing_allocations'],
+            'a correction names the binary member' => ['mlm_binary_pairing_corrections', 'member_id', 'mlm_members'],
+            'a correction names the commission earned' => ['mlm_binary_pairing_corrections', 'commission_id', 'mlm_commissions'],
+            'a restoration belongs to its correction' => ['mlm_binary_pairing_restorations', 'binary_pairing_correction_id', 'mlm_binary_pairing_corrections'],
+            'a restoration names the allocation it gives back' => ['mlm_binary_pairing_restorations', 'restored_allocation_id', 'mlm_binary_pairing_allocations'],
+            'a restoration names the lot it refills' => ['mlm_binary_pairing_restorations', 'binary_carry_lot_id', 'mlm_binary_carry_lots'],
         ];
     }
 
@@ -682,7 +697,7 @@ final class MigrationTest extends TestCase
         $this->assertEqualsCanonicalizing(
             [
                 'id', 'calculation_run_id', 'program_id', 'plan_component_id', 'member_id',
-                'left_carry_before', 'right_carry_before', 'left_added', 'right_added', 'left_reversed', 'right_reversed', 'left_available', 'right_available',
+                'left_carry_before', 'right_carry_before', 'left_added', 'right_added', 'left_restored', 'right_restored', 'left_reversed', 'right_reversed', 'left_available', 'right_available',
                 'pair_quantity', 'pair_count', 'consumed_quantity', 'left_carry_after', 'right_carry_after', 'commission_id', 'created_at', 'updated_at',
             ],
             Schema::getColumnListing('mlm_binary_pairing_results'),
@@ -719,6 +734,64 @@ final class MigrationTest extends TestCase
                 $this->assertSame('utf8mb4_bin', collect(Schema::getColumns($table))->firstWhere('name', 'side')['collation'] ?? null, $table);
             }
         }
+    }
+
+    public function test_the_correction_journal_has_exactly_its_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'plan_component_id', 'calculation_run_id', 'reversal_volume_entry_id', 'original_volume_entry_id', 'binary_pairing_result_id', 'invalidated_allocation_id', 'member_id', 'invalidated_side', 'quantity_millionths', 'commission_id', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_pairing_corrections'),
+        );
+        $this->assertEqualsCanonicalizing(
+            ['id', 'binary_pairing_correction_id', 'restored_allocation_id', 'binary_carry_lot_id', 'side', 'quantity_millionths', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_pairing_restorations'),
+        );
+        $this->assertSame([['reversal_volume_entry_id', 'invalidated_allocation_id']], $this->uniqueIndexColumns('mlm_binary_pairing_corrections'));
+        $this->assertSame([['binary_pairing_correction_id', 'restored_allocation_id']], $this->uniqueIndexColumns('mlm_binary_pairing_restorations'));
+
+        foreach (['mlm_binary_pairing_corrections' => [['original_volume_entry_id'], ['binary_pairing_result_id'], ['invalidated_allocation_id'], ['commission_id']], 'mlm_binary_pairing_restorations' => [['restored_allocation_id'], ['binary_carry_lot_id']]] as $table => $indexes) {
+            foreach ($indexes as $columns) {
+                $this->assertContains($columns, collect(Schema::getIndexes($table))->pluck('columns')->all(), $table);
+            }
+        }
+
+        foreach (['left_restored', 'right_restored'] as $column) {
+            $restored = collect(Schema::getColumns('mlm_binary_pairing_results'))->firstWhere('name', $column);
+            $this->assertIsArray($restored);
+            $this->assertStringContainsStringIgnoringCase('text', $restored['type_name']);
+            $this->assertFalse($restored['nullable'], $column);
+        }
+    }
+
+    public function test_a_database_at_000026_gains_restored_carry_and_the_correction_journal_and_can_lose_them_again(): void
+    {
+        // A binary pairing run written as 000026 left it: then the
+        // correction migrations are undone, and done again.
+        $this->artisan('migrate')->assertSuccessful();
+        $this->pairingRun();
+        $corrections = [$this->migration('000027'), $this->migration('000028'), $this->migration('000029')];
+        $this->artisan('migrate:rollback', ['--path' => $corrections, '--realpath' => true])->assertSuccessful();
+
+        $this->assertFalse(Schema::hasColumn('mlm_binary_pairing_results', 'left_restored'));
+        $this->assertFalse(Schema::hasTable('mlm_binary_pairing_corrections'));
+        $this->assertSame(1, DB::table('mlm_binary_pairing_results')->count());
+        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations']));
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate', ['--path' => $corrections, '--realpath' => true])->assertSuccessful();
+
+        // Nothing was restored before corrections existed.
+        $this->assertSame([['0', '0']], DB::table('mlm_binary_pairing_results')->get(['left_restored', 'right_restored'])->map(static fn (object $row): array => [$row->left_restored, $row->right_restored])->all());
+        $this->assertSame([0, 0], [DB::table('mlm_binary_pairing_corrections')->count(), DB::table('mlm_binary_pairing_restorations')->count()]);
+        $this->assertSame($rows['mlm_binary_pairing_results'], array_map(static fn (array $row): array => array_diff_key($row, ['left_restored' => 1, 'right_restored' => 1]), $this->rowsOf(['mlm_binary_pairing_results'])['mlm_binary_pairing_results']));
+        $this->assertSame(array_diff_key($rows, ['mlm_binary_pairing_results' => 1]), array_diff_key($this->rowsOf($tables), ['mlm_binary_pairing_results' => 1]));
+
+        $this->artisan('migrate:rollback', ['--path' => $corrections, '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame($schema, $this->schemaOf());
     }
 
     public function test_a_database_at_000022_gains_empty_binary_pairing_state_and_can_lose_it_again(): void
@@ -968,6 +1041,31 @@ final class MigrationTest extends TestCase
         }
 
         return [$entry, $commissions];
+    }
+
+    /**
+     * One binary pairing run that paired: P with L left and R right, 100
+     * each, a pair of 100.
+     */
+    private function pairingRun(): void
+    {
+        $program = Program::factory()->create();
+        [$p, $l, $r] = Member::factory()->for($program)->count(3)->create()->all();
+        $this->app->make(BinaryPlacementManager::class)->place($l, $p, BinarySide::Left);
+        $this->app->make(BinaryPlacementManager::class)->place($r, $p, BinarySide::Right);
+        // After the sides were assigned, so the sales are in P's legs.
+        $at = now()->addHour();
+        $this->app->make(VolumeRecorder::class)->record(new RecordVolume($l, 'sales', Quantity::of('100'), 'order', 'ORD-1', 'order:ORD-1', $at));
+        $this->app->make(VolumeRecorder::class)->record(new RecordVolume($r, 'sales', Quantity::of('100'), 'order', 'ORD-2', 'order:ORD-2', $at));
+        $this->app->make(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'commission.payable');
+        $version = $this->app->make(PlanVersionLifecycle::class)->draft($program->plans()->create(['code' => 'BIN', 'name' => 'Binary']));
+        $component = $this->app->make(PlanDefinitionEditor::class)->addComponent($version, 'binary', 'commission.strategy', 'Binary', [
+            'strategy' => 'binary.pairing.fixed', 'currency' => 'IDR', 'source_account' => 'commission.payable',
+            'parameters' => ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10'],
+        ]);
+        $this->app->make(PlanVersionLifecycle::class)->markValidated($version);
+
+        $this->app->make(CalculationEngine::class)->calculate(PlanComponent::query()->findOrFail($component->id), new CalculationContext(now()->subDay(), now()->addDay(), 'binary:1'));
     }
 
     /**

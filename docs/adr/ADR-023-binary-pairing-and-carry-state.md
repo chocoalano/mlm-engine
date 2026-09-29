@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.3.
+Accepted — Phase 3.3. Amended in Phase 3.4B: a reversal of carry that was already paired no longer stops the run; the pairs it fed are undone and the other side's carry given back (ADR-025), and results record `left_restored`/`right_restored`.
 
 ## Context
 

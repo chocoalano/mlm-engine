@@ -11,7 +11,6 @@ use PandaBear\Mlm\Binary\Pairing\BinaryPairingFixedStrategy;
 use PandaBear\Mlm\Binary\Pairing\BinaryPairingProportionalStrategy;
 use PandaBear\Mlm\Commission\CommissionCalculationContext;
 use PandaBear\Mlm\Commission\CommissionComponentDriver;
-use PandaBear\Mlm\Exceptions\BinaryPairingCorrectionRequired;
 use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingState;
@@ -283,8 +282,8 @@ final class BinaryPairingStrategyTest extends DatabaseTestCase
             'binary_member_id' => $this->members['P']->id,
             'calculation' => ['amount' => '37.5', 'amount_per_pair' => '12.5'],
             'carry' => [
-                'left_added' => '330', 'left_after' => '30', 'left_before' => '0', 'left_reversed' => '0',
-                'right_added' => '300', 'right_after' => '0', 'right_before' => '0', 'right_reversed' => '0',
+                'left_added' => '330', 'left_after' => '30', 'left_before' => '0', 'left_restored' => '0', 'left_reversed' => '0',
+                'right_added' => '300', 'right_after' => '0', 'right_before' => '0', 'right_restored' => '0', 'right_reversed' => '0',
             ],
             'pairing' => ['consumed_quantity' => '300', 'pair_count' => '3', 'pair_quantity' => '100'],
             'run' => ['from' => '2026-01-01 00:00:00', 'until' => '2026-02-01 00:00:00'],
@@ -497,45 +496,6 @@ final class BinaryPairingStrategyTest extends DatabaseTestCase
         $this->assertTrue(BinaryCarryLot::query()->where('member_id', $this->members['P']->id)->sole()->reversalEntry?->is($reversal));
     }
 
-    public function test_a_reversal_of_paired_carry_stops_the_run_until_it_is_corrected(): void
-    {
-        $component = $this->pairingComponent($this->fixedPairing(), $this->plan);
-        $sale = $this->sale($this->members['L'], '100', '2026-01-10', 'l1');
-        $this->sale($this->members['R'], '100', '2026-01-10', 'r1');
-        $this->pair($component, '2026-01-01', '2026-02-01');
-        $reversal = $this->reverse($sale, 'l1-refund', at: CarbonImmutable::parse('2026-02-05'));
-        $state = $this->pairingState();
-
-        try {
-            $this->pair($component, '2026-02-01', '2026-03-01');
-            $this->fail('Paired carry was reversed silently.');
-        } catch (BinaryPairingCorrectionRequired $exception) {
-            $this->assertStringContainsString("Volume entry [{$sale->id}] is reversed by [{$reversal->id}], but binary pairing component [{$component->id}] has already paired 100 of it in the left leg of member [{$this->members['P']->id}]", $exception->getMessage());
-        }
-
-        $this->assertEquals($state, $this->pairingState());
-        $this->assertSame([0, 0], [DB::table('mlm_ledger_transactions')->count(), DB::table('mlm_wallets')->count()]);
-    }
-
-    public function test_a_reversal_of_partly_paired_carry_also_stops_the_run(): void
-    {
-        $component = $this->pairingComponent($this->fixedPairing(), $this->plan);
-        $sale = $this->sale($this->members['L'], '150', '2026-01-10', 'l1');
-        $this->sale($this->members['R'], '100', '2026-01-10', 'r1');
-        $this->pair($component, '2026-01-01', '2026-02-01');
-        $this->reverse($sale, 'l1-refund', at: CarbonImmutable::parse('2026-02-05'));
-        $state = $this->pairingState();
-
-        $this->expectException(BinaryPairingCorrectionRequired::class);
-        $this->expectExceptionMessage('has already paired 100 of it in the left leg');
-
-        try {
-            $this->pair($component, '2026-02-01', '2026-03-01');
-        } finally {
-            $this->assertEquals($state, $this->pairingState());
-        }
-    }
-
     public function test_a_reversal_of_activity_before_the_components_state_began_is_not_its_concern(): void
     {
         $component = $this->pairingComponent($this->fixedPairing(), $this->plan);
@@ -589,7 +549,7 @@ final class BinaryPairingStrategyTest extends DatabaseTestCase
         $preview = [...$this->app->make(BinaryPairingFixedStrategy::class)->calculate($context($component->id))];
 
         $this->assertCount(1, $preview);
-        $this->assertSame([[], [], [], [], [], []], array_values($this->pairingState()));
+        $this->assertSame([[], [], [], [], [], [], [], []], array_values($this->pairingState()));
 
         $this->expectException(InvalidBinaryPairingRange::class);
         $this->expectExceptionMessage('keeps its state per plan component');

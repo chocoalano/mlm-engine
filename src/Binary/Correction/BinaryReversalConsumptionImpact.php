@@ -8,7 +8,9 @@ namespace PandaBear\Mlm\Binary\Correction;
  * One pairing that consumed part of a reversed entry's carry lot: the
  * allocation, the pairing result and run it belongs to, the binary member
  * who earned, and the commission that pairing produced — none when nothing
- * paired into money, such as a proportional award rounded to zero.
+ * paired into money, such as a proportional award rounded to zero. What
+ * later corrections released of it (ADR-025) — invalidated, or restored to
+ * carry — is shown beside what it allocated, and what still counts.
  * Quantities and amounts are exact canonical decimals; moments are
  * `Y-m-d H:i:s`.
  */
@@ -28,6 +30,9 @@ final readonly class BinaryReversalConsumptionImpact
         public ?string $commissionStatus,
         public ?string $commissionAmount,
         public ?string $commissionCurrency,
+        public string $invalidatedQuantity = '0',
+        public string $restoredQuantity = '0',
+        public ?string $netQuantity = null,
     ) {}
 
     /**
@@ -49,6 +54,9 @@ final readonly class BinaryReversalConsumptionImpact
             'commission_status' => $this->commissionStatus,
             'commission_amount' => $this->commissionAmount,
             'commission_currency' => $this->commissionCurrency,
+            'invalidated_quantity' => $this->invalidatedQuantity,
+            'restored_quantity' => $this->restoredQuantity,
+            'net_quantity' => $this->netQuantity ?? $this->quantity,
         ];
     }
 }
