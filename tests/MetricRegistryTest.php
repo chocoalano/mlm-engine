@@ -7,6 +7,8 @@ namespace PandaBear\Mlm\Tests;
 use PandaBear\Mlm\Exceptions\DuplicateMetric;
 use PandaBear\Mlm\Exceptions\InvalidMetric;
 use PandaBear\Mlm\Exceptions\UnknownMetric;
+use PandaBear\Mlm\Metrics\BinaryLeftVolumeMetric;
+use PandaBear\Mlm\Metrics\BinaryRightVolumeMetric;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
@@ -24,10 +26,12 @@ final class MetricRegistryTest extends TestCase
     {
         $registry = $this->app->make(MetricRegistry::class);
 
-        $this->assertSame(['member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
+        $this->assertSame(['binary.left.volume', 'binary.right.volume', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
         $this->assertInstanceOf(MemberVolumeMetric::class, $registry->get('member.volume'));
         $this->assertInstanceOf(SponsorNetworkVolumeMetric::class, $registry->get('sponsor.network.volume'));
         $this->assertInstanceOf(PlacementNetworkVolumeMetric::class, $registry->get('placement.network.volume'));
+        $this->assertInstanceOf(BinaryLeftVolumeMetric::class, $registry->get('binary.left.volume'));
+        $this->assertInstanceOf(BinaryRightVolumeMetric::class, $registry->get('binary.right.volume'));
     }
 
     public function test_the_registry_is_one_instance_for_the_application(): void
@@ -84,7 +88,7 @@ final class MetricRegistryTest extends TestCase
     public function test_an_unknown_key_is_refused_rather_than_resolved_as_zero(): void
     {
         $this->expectException(UnknownMetric::class);
-        $this->expectExceptionMessage('No metric is registered under "does.not.exist". Registered: member.volume, placement.network.volume, sponsor.network.volume.');
+        $this->expectExceptionMessage('No metric is registered under "does.not.exist". Registered: binary.left.volume, binary.right.volume, member.volume, placement.network.volume, sponsor.network.volume.');
 
         $this->app->make(MetricEngine::class)->resolve('does.not.exist', new MetricContext(new Member));
     }
@@ -146,6 +150,6 @@ final class MetricRegistryTest extends TestCase
 
         $this->app->register(ExampleMetricServiceProvider::class);
 
-        $this->assertSame(['custom.example', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
+        $this->assertSame(['binary.left.volume', 'binary.right.volume', 'custom.example', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $registry->keys());
     }
 }

@@ -7,11 +7,13 @@ namespace PandaBear\Mlm\Tests;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\BinaryPlacementPosition;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\CommissionAdjustment;
@@ -54,9 +56,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class];
 
     protected function defineEnvironment($app): void
     {
@@ -175,6 +177,33 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(['Bob@1', 'Alice@2'], $this->relatives($this->placement()->ancestors($members['Charlie'])));
         $this->assertTrue($this->placement()->directParent($members['Bob'])?->is($members['Alice']));
         $this->assertSame(['Charlie'], $this->placement()->directChildren($members['Bob'])->pluck('member_code')->all());
+    }
+
+    public function test_the_binary_overlay_writes_reads_and_totals_on_the_configured_connection(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'Alice', 'Bob', 'Charlie', 'Dave');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['Bob'], $members['Alice'], BinarySide::Left);
+        $this->binary()->adopt($this->placement()->place($members['Charlie'], $members['Alice']), BinarySide::Right);
+        $this->binary()->place($members['Dave'], $members['Bob'], BinarySide::Right);
+
+        $this->record($members['Bob'], '20', 'order:ORD-1', at: CarbonImmutable::parse('2026-02-01 00:00:00'));
+        $this->reverse($this->record($members['Dave'], '5', 'order:ORD-2', at: CarbonImmutable::parse('2026-02-01 00:00:00')), 'refund:RF-1');
+        $this->record($members['Dave'], '1', 'order:ORD-3', at: CarbonImmutable::parse('2026-02-01 00:00:00'));
+        $this->record($members['Charlie'], '7', 'order:ORD-4', at: CarbonImmutable::parse('2026-02-01 00:00:00'));
+
+        $this->assertCount(3, $this->binaryState('mlm')['positions']);
+        $this->assertSame(['Bob@1', 'Charlie@1', 'Dave@2'], $this->relatives($this->binaryTree()->descendants($members['Alice'])));
+        $this->assertSame('Charlie', $this->binaryTree()->child($members['Alice'], BinarySide::Right)?->member_code);
+        $this->assertSame('Bob', $this->binaryTree()->directParent($members['Dave'])?->member_code);
+
+        // The overlay exists only on [mlm]: a query on the default connection
+        // would fail, not return zero.
+        $engine = $this->app->make(MetricEngine::class);
+
+        $this->assertSame('21', $engine->resolve('binary.left.volume', new MetricContext($members['Alice'], ['type' => 'sales']))->value());
+        $this->assertSame('7', $engine->resolve('binary.right.volume', new MetricContext($members['Alice'], ['type' => 'sales', 'max_depth' => 1]))->value());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_binary_placement_positions'));
     }
 
     public function test_volume_is_recorded_reversed_and_totalled_on_the_configured_connection(): void

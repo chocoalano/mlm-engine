@@ -6,10 +6,12 @@ namespace PandaBear\Mlm\Tests\Database;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Commission\CommissionStatus;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
+use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
@@ -173,6 +175,88 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         );
         $this->assertSame(3, DB::table('mlm_placement_edges')->count());
         $this->assertTreeConsistent('placement', 'mlm_placement_edges', 'parent_id', 'placed_at');
+    }
+
+    public function test_racing_placements_onto_one_binary_side_take_it_once_and_leave_the_loser_unplaced(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'P', 'A', 'B');
+
+        $this->closeGate('mlm_placement_edges');
+        $first = $this->start(['op' => 'binary_place', 'member' => $members['A']->id, 'parent' => $members['P']->id, 'side' => 'left']);
+        $second = $this->start(['op' => 'binary_place', 'member' => $members['B']->id, 'parent' => $members['P']->id, 'side' => 'left']);
+
+        $this->awaitWaitingOn(['mlm_placement_edges', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+        $this->assertOneSucceededOneRefused($results, InvalidBinaryPlacement::class, 'The left of member');
+
+        // The winner is placed and on the left; the loser is not placed at
+        // all, generically or in the binary tree.
+        [$winner, $loser] = $results[0]['ok'] ? [$members['A'], $members['B']] : [$members['B'], $members['A']];
+        $this->assertSame([$winner->id], DB::table('mlm_placement_edges')->pluck('member_id')->all());
+        $this->assertSame([['left', $members['P']->id]], DB::table('mlm_binary_placement_positions')->get(['side', 'parent_id'])->map(static fn (object $row): array => [$row->side, $row->parent_id])->all());
+        $this->assertSame(0, DB::table('mlm_genealogy_paths')->where('descendant_id', $loser->id)->count());
+        $this->assertTreeConsistent('placement', 'mlm_placement_edges', 'parent_id', 'placed_at');
+        $this->assertBinaryTreeConsistent();
+    }
+
+    public function test_racing_placements_onto_opposite_binary_sides_both_take_theirs(): void
+    {
+        $members = $this->members(Program::factory()->create(), 'P', 'A', 'B');
+
+        $this->closeGate('mlm_placement_edges');
+        $left = $this->start(['op' => 'binary_place', 'member' => $members['A']->id, 'parent' => $members['P']->id, 'side' => 'left']);
+        $right = $this->start(['op' => 'binary_place', 'member' => $members['B']->id, 'parent' => $members['P']->id, 'side' => 'right']);
+
+        $this->awaitWaitingOn(['mlm_placement_edges', 'mlm_programs']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($left), $this->finish($right)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+        $this->assertSame('A', $this->binaryTree()->child($members['P'], BinarySide::Left)?->member_code);
+        $this->assertSame('B', $this->binaryTree()->child($members['P'], BinarySide::Right)?->member_code);
+        $this->assertTreeConsistent('placement', 'mlm_placement_edges', 'parent_id', 'placed_at');
+        $this->assertBinaryTreeConsistent();
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function adoptionSides(): array
+    {
+        return ['the same side' => ['left', true], 'opposite sides' => ['right', false]];
+    }
+
+    #[DataProvider('adoptionSides')]
+    public function test_racing_adoptions_of_one_edge_enrol_it_once(string $secondSide, bool $bothSucceed): void
+    {
+        $members = $this->members(Program::factory()->create(), 'P', 'A');
+        $edge = $this->placement()->place($members['A'], $members['P']);
+
+        $this->closeGate('mlm_binary_placement_positions');
+        $first = $this->start(['op' => 'binary_adopt', 'edge' => $edge->id, 'side' => 'left']);
+        $second = $this->start(['op' => 'binary_adopt', 'edge' => $edge->id, 'side' => $secondSide]);
+
+        $this->awaitWaitingOn(['mlm_binary_placement_positions', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+        $position = DB::table('mlm_binary_placement_positions')->sole();
+
+        if ($bothSucceed) {
+            $this->assertTrue($results[0]['ok'] && $results[1]['ok'], json_encode($results, JSON_THROW_ON_ERROR));
+            $this->assertSame([$position->id, $position->id], [$results[0]['id'], $results[1]['id']]);
+        } else {
+            $this->assertOneSucceededOneRefused($results, InvalidBinaryPlacement::class, 'a binary side is assigned once and never moves');
+        }
+
+        $this->assertSame($edge->id, $position->placement_edge_id);
+        $this->assertBinaryTreeConsistent();
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -1108,6 +1192,37 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $parents = DB::table($edges)->pluck($parentColumn, 'member_id')->all();
         /** @var array<string, string> $at */
         $at = DB::table($edges)->pluck($atColumn, 'member_id')->map(static fn (mixed $moment): string => (string) $moment)->all();
+
+        $this->assertPathsMatch($tree, $parents, $at);
+    }
+
+    /**
+     * The binary tree's paths against its positions, as for the other trees:
+     * each position's member is its edge's.
+     */
+    private function assertBinaryTreeConsistent(): void
+    {
+        $positions = DB::table('mlm_binary_placement_positions as positions')
+            ->join('mlm_placement_edges as edges', 'edges.id', '=', 'positions.placement_edge_id')
+            ->get(['edges.member_id', 'edges.parent_id as edge_parent_id', 'positions.parent_id', 'positions.assigned_at']);
+
+        foreach ($positions as $position) {
+            $this->assertSame($position->edge_parent_id, $position->parent_id);
+        }
+
+        $this->assertPathsMatch(
+            'binary',
+            $positions->pluck('parent_id', 'member_id')->all(),
+            $positions->pluck('assigned_at', 'member_id')->map(static fn (mixed $moment): string => (string) $moment)->all(),
+        );
+    }
+
+    /**
+     * @param  array<string, string>  $parents
+     * @param  array<string, string>  $at
+     */
+    private function assertPathsMatch(string $tree, array $parents, array $at): void
+    {
         $expected = [];
 
         foreach (array_unique([...array_keys($parents), ...array_values($parents)]) as $member) {

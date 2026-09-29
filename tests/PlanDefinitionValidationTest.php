@@ -118,6 +118,14 @@ final class PlanDefinitionValidationTest extends DatabaseTestCase
                 static fn (self $test, PlanVersion $version) => $addRule($test, $version, $rule('placement.network.volume', ['type' => 'Sales'])),
                 'The metric "placement.network.volume" received an invalid "type"',
             ],
+            'binary.left.volume with an invalid max_depth' => [
+                static fn (self $test, PlanVersion $version) => $addRule($test, $version, $rule('binary.left.volume', ['type' => 'sales', 'max_depth' => '3'])),
+                'The metric "binary.left.volume" received an invalid "max_depth"',
+            ],
+            'binary.right.volume with an unknown parameter' => [
+                static fn (self $test, PlanVersion $version) => $addRule($test, $version, $rule('binary.right.volume', ['type' => 'sales', 'carry' => true])),
+                'The metric "binary.right.volume" does not accept "carry"',
+            ],
             'a custom metric refusing its parameters' => [
                 static function (self $test, PlanVersion $version) use ($addRule, $rule): void {
                     $test->app->make(MetricRegistry::class)->register(new ScoreMetric);
@@ -207,6 +215,8 @@ final class PlanDefinitionValidationTest extends DatabaseTestCase
             'member.volume' => [['type' => 'sales'], [], ['type' => 'sales', 'max_depth' => 1], ['type' => 5]],
             'sponsor.network.volume' => [['type' => 'sales', 'max_depth' => 2], ['type' => 'sales', 'max_depth' => '2'], ['type' => 'sales', 'levels' => 1]],
             'placement.network.volume' => [['type' => 'sales'], ['max_depth' => 1], ['type' => 'sales', 'max_depth' => null]],
+            'binary.left.volume' => [['type' => 'sales', 'max_depth' => 3], ['type' => 'sales', 'max_depth' => 0], ['type' => 'Sales']],
+            'binary.right.volume' => [['type' => 'sales'], ['type' => 'sales', 'max_depth' => 2.0], ['type' => 'sales', 'side' => 'right']],
         ];
 
         foreach ($cases as $key => $parameterSets) {

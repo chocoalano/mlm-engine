@@ -8,6 +8,8 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use PandaBear\Mlm\Binary\BinaryPlacementManager;
+use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Finance\LedgerAccountManager;
@@ -19,6 +21,7 @@ use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
@@ -39,7 +42,7 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions'];
 
     private const BUILT_IN_STRATEGIES = ['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'];
 
@@ -278,6 +281,8 @@ final class MigrationTest extends TestCase
             'an adjustment belongs to a program' => ['mlm_commission_adjustments', 'program_id', 'mlm_programs'],
             'an adjustment corrects a commission' => ['mlm_commission_adjustments', 'commission_id', 'mlm_commissions'],
             'an adjustment names its ledger reversal' => ['mlm_commission_adjustments', 'ledger_transaction_id', 'mlm_ledger_transactions'],
+            'a binary position enrols a placement edge' => ['mlm_binary_placement_positions', 'placement_edge_id', 'mlm_placement_edges'],
+            'a binary position names its parent' => ['mlm_binary_placement_positions', 'parent_id', 'mlm_members'],
         ];
     }
 
@@ -588,6 +593,99 @@ final class MigrationTest extends TestCase
         $this->assertSame(0, DB::table('migrations')->where('migration', 'like', '%000020%')->count());
     }
 
+    public function test_provenance_and_adjustments_roll_back_to_000019_keeping_every_row_they_found(): void
+    {
+        [$entry, $commissions] = $this->legacyCommissions();
+        $bob = Member::query()->findOrFail($entry->member_id);
+        $alice = Member::query()->whereKeyNot($bob->id)->sole();
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
+        $this->app->make(PlacementGenealogy::class)->place($bob, $alice);
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf([...self::TABLES_BEFORE_THE_LEDGER, 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions']);
+
+        $this->artisan('migrate', ['--path' => $this->migration('000020'), '--realpath' => true])->assertSuccessful();
+        $this->artisan('migrate', ['--path' => $this->migration('000021'), '--realpath' => true])->assertSuccessful();
+
+        foreach ($commissions as $strategy => $id) {
+            $this->assertSame(
+                in_array($strategy, self::BUILT_IN_STRATEGIES, true) ? ['volume-entry', $entry->id] : [null, null],
+                array_values((array) DB::table('mlm_commissions')->where('id', $id)->first(['source_type', 'source_id'])),
+                $strategy,
+            );
+        }
+
+        $this->assertTrue(Schema::hasTable('mlm_commission_adjustments'));
+
+        // One step at a time, newest first, as a deployment would undo them.
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000021'), '--realpath' => true])->assertSuccessful();
+
+        $this->assertFalse(Schema::hasTable('mlm_commission_adjustments'));
+        $this->assertTrue(Schema::hasColumn('mlm_commissions', 'source_type'));
+
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000020'), '--realpath' => true])->assertSuccessful();
+
+        $this->assertFalse(Schema::hasColumn('mlm_commissions', 'source_type'));
+        $this->assertFalse(Schema::hasColumn('mlm_commissions', 'source_id'));
+        $this->assertSame($rows, $this->rowsOf(array_keys($rows)));
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame(19, DB::table('migrations')->count());
+    }
+
+    public function test_binary_positions_have_exactly_their_columns_and_one_child_per_side(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'placement_edge_id', 'parent_id', 'side', 'assigned_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_binary_placement_positions'),
+        );
+        $this->assertEqualsCanonicalizing([['placement_edge_id'], ['parent_id', 'side']], $this->uniqueIndexColumns('mlm_binary_placement_positions'));
+        $this->assertSame(['id'], collect(Schema::getIndexes('mlm_binary_placement_positions'))->firstWhere('primary', true)['columns'] ?? null);
+
+        // The generic placement stays positionless.
+        $this->assertEqualsCanonicalizing(['id', 'member_id', 'parent_id', 'placed_at', 'created_at', 'updated_at'], Schema::getColumnListing('mlm_placement_edges'));
+
+        if (in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $this->assertSame('utf8mb4_bin', collect(Schema::getColumns('mlm_binary_placement_positions'))->firstWhere('name', 'side')['collation'] ?? null);
+        }
+    }
+
+    public function test_a_database_at_000021_gains_an_empty_binary_overlay_and_can_lose_it_again(): void
+    {
+        // Everything the package wrote before binary placement: genealogies,
+        // volume, a plan, commissions and a clawback of them.
+        [$entry] = $this->legacyCommissions();
+        $this->artisan('migrate', ['--path' => [$this->migration('000020'), $this->migration('000021')], '--realpath' => true])->assertSuccessful();
+        $bob = Member::query()->findOrFail($entry->member_id);
+        $alice = Member::query()->whereKeyNot($bob->id)->sole();
+        $carol = Member::factory()->for($bob->program)->create();
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
+        $this->app->make(PlacementGenealogy::class)->place($bob, $alice);
+        $this->app->make(PlacementGenealogy::class)->place($carol, $alice);
+        $reversal = $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
+        $this->assertSame(4, $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal)->count());
+        $this->assertFalse(Schema::hasTable('mlm_binary_placement_positions'));
+        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions']));
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        // Nothing is guessed into the overlay: every edge stays generic-only.
+        $this->assertSame(0, DB::table('mlm_binary_placement_positions')->count());
+        $this->assertSame($rows, $this->rowsOf($tables));
+
+        $this->app->make(BinaryPlacementManager::class)->adopt(PlacementEdge::query()->where('member_id', $carol->id)->sole(), BinarySide::Right);
+        $this->assertSame(2, DB::table('mlm_genealogy_paths')->where('tree_type', 'binary')->where('depth', 0)->count());
+
+        $this->artisan('migrate:rollback', ['--path' => $this->migration('000022'), '--realpath' => true])->assertSuccessful();
+
+        // The overlay goes with its paths; everything else is as it was.
+        $this->assertFalse(Schema::hasTable('mlm_binary_placement_positions'));
+        $this->assertSame($rows, $this->rowsOf($tables));
+        $this->assertSame($schema, $this->schemaOf());
+    }
+
     public function test_a_database_at_000018_gains_the_source_entry_index_without_touching_its_rows_and_can_lose_it_again(): void
     {
         $migrations = array_map(
@@ -769,6 +867,49 @@ final class MigrationTest extends TestCase
         }
 
         return [$entry, $commissions];
+    }
+
+    /**
+     * The one migration file numbered `$number`, as a real path.
+     */
+    private function migration(string $number): string
+    {
+        $files = glob(dirname(__DIR__)."/database/migrations/2026_09_28_{$number}_*.php") ?: [];
+        $this->assertCount(1, $files, $number);
+
+        return $files[0];
+    }
+
+    /**
+     * Every package table as the database describes it: columns, indexes
+     * and foreign keys, in a stable order.
+     *
+     * @return array<string, array<string, mixed>>
+     */
+    private function schemaOf(): array
+    {
+        $tables = array_values(array_filter(
+            array_column(Schema::getTables(), 'name'),
+            static fn (string $table): bool => str_starts_with($table, 'mlm_'),
+        ));
+        sort($tables);
+        $schema = [];
+
+        foreach ($tables as $table) {
+            $sorted = static function (array $items): array {
+                usort($items, static fn (array $a, array $b): int => strcmp(json_encode($a, JSON_THROW_ON_ERROR), json_encode($b, JSON_THROW_ON_ERROR)));
+
+                return $items;
+            };
+
+            $schema[$table] = [
+                'columns' => Schema::getColumns($table),
+                'indexes' => $sorted(Schema::getIndexes($table)),
+                'foreign_keys' => $sorted(Schema::getForeignKeys($table)),
+            ];
+        }
+
+        return $schema;
     }
 
     /**

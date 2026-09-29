@@ -6,6 +6,9 @@ namespace PandaBear\Mlm\Tests\Concerns;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use PandaBear\Mlm\Binary\BinaryGenealogy;
+use PandaBear\Mlm\Binary\BinaryPlacementManager;
+use PandaBear\Mlm\Binary\BinaryRelative;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\PlacementRelative;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
@@ -27,6 +30,16 @@ trait BuildsGenealogies
     protected function placement(): PlacementGenealogy
     {
         return $this->app->make(PlacementGenealogy::class);
+    }
+
+    protected function binary(): BinaryPlacementManager
+    {
+        return $this->app->make(BinaryPlacementManager::class);
+    }
+
+    protected function binaryTree(): BinaryGenealogy
+    {
+        return $this->app->make(BinaryGenealogy::class);
     }
 
     /**
@@ -111,10 +124,31 @@ trait BuildsGenealogies
     }
 
     /**
+     * The binary overlay alone: its positions, with their side and moment,
+     * and its paths.
+     *
+     * @return array{positions: list<string>, paths: list<string>}
+     */
+    protected function binaryState(?string $connection = null): array
+    {
+        $codes = Member::query()->pluck('member_code', 'id');
+        $db = DB::connection($connection);
+
+        return [
+            'positions' => $db->table('mlm_binary_placement_positions as positions')
+                ->join('mlm_placement_edges as edges', 'edges.id', '=', 'positions.placement_edge_id')
+                ->get(['positions.parent_id', 'positions.side', 'positions.assigned_at', 'edges.member_id'])
+                ->map(static fn (object $position): string => "{$codes[$position->parent_id]} > {$codes[$position->member_id]} {$position->side} @{$position->assigned_at}")
+                ->sort()->values()->all(),
+            'paths' => $this->treeState('binary', 'mlm_placement_edges', 'parent_id', $connection)['paths'],
+        ];
+    }
+
+    /**
      * When each path of one tree took effect, exactly as stored, by member
      * code.
      *
-     * @param  'sponsor'|'placement'  $tree
+     * @param  'sponsor'|'placement'|'binary'  $tree
      * @return array<string, string> "A > B @1" => "2026-01-01 10:00:00", by path
      */
     protected function pathMoments(string $tree, ?string $connection = null): array
@@ -133,12 +167,12 @@ trait BuildsGenealogies
     }
 
     /**
-     * @param  Collection<int, SponsorRelative|PlacementRelative>  $relatives
+     * @param  Collection<int, SponsorRelative|PlacementRelative|BinaryRelative>  $relatives
      * @return list<string> "code@depth", in the order given
      */
     protected function relatives(Collection $relatives): array
     {
-        return $relatives->map(static fn (SponsorRelative|PlacementRelative $relative): string => "{$relative->member->member_code}@{$relative->depth}")->all();
+        return $relatives->map(static fn (SponsorRelative|PlacementRelative|BinaryRelative $relative): string => "{$relative->member->member_code}@{$relative->depth}")->all();
     }
 
     /**

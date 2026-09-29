@@ -22,6 +22,8 @@ declare(strict_types=1);
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\Foundation\Application;
+use PandaBear\Mlm\Binary\BinaryPlacementManager;
+use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Calculation\CalculationContext;
 use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
@@ -39,6 +41,7 @@ use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
@@ -116,6 +119,10 @@ try {
             ->assignSponsor(Member::findOrFail($job['member']), Member::findOrFail($job['sponsor']))->getKey(),
         'place' => app(PlacementGenealogy::class)
             ->place(Member::findOrFail($job['member']), Member::findOrFail($job['parent']))->getKey(),
+        'binary_place' => app(BinaryPlacementManager::class)
+            ->place(Member::findOrFail($job['member']), Member::findOrFail($job['parent']), BinarySide::from($job['side']))->getKey(),
+        'binary_adopt' => app(BinaryPlacementManager::class)
+            ->adopt(PlacementEdge::findOrFail($job['edge']), BinarySide::from($job['side']))->getKey(),
         'record' => app(VolumeRecorder::class)->record($record($job))->getKey(),
         'reverse' => app(VolumeRecorder::class)->reverse(new ReverseVolume(
             entry: VolumeEntry::findOrFail($job['entry']),

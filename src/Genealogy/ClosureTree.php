@@ -16,9 +16,9 @@ use PandaBear\Mlm\Support\EffectiveMoment;
 /**
  * @internal
  *
- * The closure-table mechanics the sponsor and placement genealogies share:
- * one tree's rows in `mlm_genealogy_paths`, and the locking a write to that
- * tree needs. Not a public API and not a tree framework — each genealogy
+ * The closure-table mechanics the sponsor, placement and binary trees
+ * share: one tree's rows in `mlm_genealogy_paths`, and the locking a write to
+ * that tree needs. Not a public API and not a tree framework — each genealogy
  * keeps its own edges, rules, exceptions and vocabulary. Only the storage
  * mechanics live here, so they exist once.
  *
@@ -32,7 +32,7 @@ final readonly class ClosureTree
     private const PATHS = 'mlm_genealogy_paths';
 
     /**
-     * @param  'sponsor'|'placement'  $type  the `tree_type`, fixed by the genealogy that owns this tree
+     * @param  'sponsor'|'placement'|'binary'  $type  the `tree_type`, fixed by the genealogy that owns this tree
      */
     public function __construct(private string $type) {}
 
@@ -72,8 +72,8 @@ final readonly class ClosureTree
      * Every write to a program's genealogies takes this lock, which is what
      * makes a cycle check safe: locking the two members alone would let two
      * writes over disjoint pairs each pass a check that the other breaks. The
-     * cost is that genealogy writes within one program — sponsor and
-     * placement alike — run one at a time.
+     * cost is that genealogy writes within one program — sponsor, placement
+     * and binary alike — run one at a time.
      */
     public function lockProgram(Member $member): void
     {

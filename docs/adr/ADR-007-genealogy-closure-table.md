@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 1.2. Amended in Phase 1.3 for the placement tree, and in Phase 2.2 for `effective_from` (ADR-012).
+Accepted — Phase 1.2. Amended in Phase 1.3 for the placement tree, in Phase 2.2 for `effective_from` (ADR-012), and in Phase 3.2: the same storage also holds the binary overlay's paths, under `tree_type` `binary` (ADR-022).
 
 ## Context
 

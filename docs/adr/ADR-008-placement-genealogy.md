@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 1.3.
+Accepted — Phase 1.3. Amended in Phase 3.2: binary positions are an overlay on these edges, kept in their own table; the placement edge and its rules are unchanged (ADR-022).
 
 ## Context
 

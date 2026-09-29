@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor and depth-based strategies, fixed or proportional with explicit rounding, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, and an explicit binary left/right overlay on placement; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor and depth-based strategies, fixed or proportional with explicit rounding, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume` and `binary.right.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, binary pairing and carry commissions, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -55,7 +55,7 @@ php artisan migrate
 | `mlm_plans` | plans: `id`, `program_id`, `code`, `name` |
 | `mlm_plan_versions` | plan versions: `id`, `plan_id`, `version`, `status`, and one timestamp per lifecycle step |
 | `mlm_sponsor_edges` | direct sponsorships: `id`, `member_id`, `sponsor_id`, `assigned_at` |
-| `mlm_genealogy_paths` | every ancestor/descendant pair of either tree: `tree_type`, `ancestor_id`, `descendant_id`, `depth` |
+| `mlm_genealogy_paths` | every ancestor/descendant pair of each tree — sponsor, placement, binary: `tree_type`, `ancestor_id`, `descendant_id`, `depth`, `effective_from` |
 | `mlm_placement_edges` | direct placements: `id`, `member_id`, `parent_id`, `placed_at` |
 | `mlm_volume_entries` | immutable volume history: `program_id`, `member_id`, `type`, `quantity_millionths`, `source_type`, `source_id`, `idempotency_key`, `effective_at`, `reversal_of_id` |
 
@@ -390,11 +390,57 @@ $placement->descendantsAt($bob, CarbonImmutable::parse('2026-06-01 00:00:00'), m
 - A member that already has members placed under it can still receive its first placement parent; its whole placement subtree is attached beneath that parent.
 - Refused placements throw `InvalidPlacementAssignment` and change nothing. Every placement runs in one transaction.
 
-Placement paths share the closure table with sponsor paths under their own `tree_type`, and never leak into sponsor queries. **Binary positioning (left/right), matrix slots, spillover and automatic placement strategies are not implemented yet.** A member taking part in the placement tree cannot be deleted.
+Placement paths share the closure table with sponsor paths under their own `tree_type`, and never leak into sponsor queries. Binary left/right positions are an explicit overlay on these edges ([Binary placement foundation](#binary-placement-foundation)); **matrix slots, spillover and automatic placement strategies are not implemented yet.** A member taking part in the placement tree cannot be deleted.
 
 Both genealogies are written only through their services. Raw query-builder or SQL writes to the edge or path tables bypass every graph rule: the database backs local invariants — one direct edge per member, one path per pair, foreign keys — but not acyclicity or consistency between edges and paths.
 
 The design decisions are recorded in [`docs/adr`](docs/adr).
+
+## Binary placement foundation
+
+Binary is an **overlay** on the generic placement tree, not a replacement for it. Generic placement stays unlimited and positionless: a parent may still have any number of children. Only an edge explicitly given a side — `BinarySide::Left` or `BinarySide::Right` — is in the binary tree, and a parent has at most one binary child on each side.
+
+```php
+use PandaBear\Mlm\Binary\BinaryGenealogy;
+use PandaBear\Mlm\Binary\BinaryPlacementManager;
+use PandaBear\Mlm\Binary\BinarySide;
+
+// A new placement with its side: placed through PlacementGenealogy, and
+// given the side, together or not at all.
+$position = app(BinaryPlacementManager::class)->place(
+    $member,
+    $parent,
+    BinarySide::Left,
+);
+
+// An existing generic placement given a side, from now on.
+$position = app(BinaryPlacementManager::class)->adopt(
+    $placementEdge,
+    BinarySide::Right,
+);
+
+$binary = app(BinaryGenealogy::class);
+
+$binary->child($parent, BinarySide::Left);     // the left child, or null
+$binary->directParent($member);                 // the binary parent, or null for a binary root
+$binary->positionOf($member);                   // BinaryPlacementPosition: parent, side, assigned_at
+$binary->ancestors($member);                    // BinaryRelative: member + depth, nearest first
+$binary->descendants($parent, maxDepth: 2);
+
+// As the binary tree stood at a moment:
+$binary->childAt($parent, BinarySide::Left, CarbonImmutable::parse('2026-06-01 00:00:00'));
+$binary->descendantsAt($parent, CarbonImmutable::parse('2026-06-01 00:00:00'));
+```
+
+- Sides are exactly `left` and `right`, assigned explicitly — never taken from the order children were placed in. There is no automatic placement: no spillover, next free slot or weaker-side rule.
+- **Only binary edges belong to the binary tree.** It keeps its own paths (`tree_type` `binary`), so a member placed only generically under a binary member stays out of every leg until its own edge is given a side. A member without a binary position is a binary root, even when it has a generic placement parent.
+- **Adoption is not retroactive.** An edge placed in January and adopted in March is binary from March: earlier activity never becomes binary activity. An adopted member brings its whole binary subtree with it.
+- Adopting an edge again on the same side returns its position; the other side is refused. `place()` is not a replay: a member that is already placed is refused, as placement refuses it — adopt its edge instead.
+- A taken side is refused with `InvalidBinaryPlacement`, and a refused `place()` leaves no generic placement behind. A side never changes: there is no move or removal.
+- Binary never reads or writes sponsorship. There is one binary tree per program; several independent binary trees in one program are not supported yet.
+- Positions are written only by `BinaryPlacementManager`. A stored position that disagrees with its placement edge is refused with `CorruptBinaryPlacement` rather than read.
+
+Existing placements are **not** adopted by the migration: the package cannot know which should be left, right or not binary at all. **Binary pairing, carry-forward and binary commissions are not implemented yet.**
 
 ## Volume
 
@@ -505,6 +551,26 @@ app(MetricEngine::class)->resolve('sponsor.network.volume', new MetricContext(
 - Computed on demand, exactly, in one query; nothing is stored.
 
 These are generic graph figures, not a compensation plan: there are no generations, legs, sides, slots or pairing.
+
+### Built-in: `binary.left.volume` and `binary.right.volume`
+
+The net volume of one type in one binary leg of the member: its child on that side and everyone below that child **in the binary tree**, over the optional range. The member's own volume, its other leg and members placed only generically never count, and an empty side is `0`.
+
+```php
+app(MetricEngine::class)->resolve('binary.left.volume', new MetricContext(
+    member: $alice,
+    parameters: ['type' => 'sales', 'max_depth' => 3],   // max_depth is optional
+    from: $june1,
+    until: $july1,
+));
+```
+
+- `type` is required and checked as for the other volume metrics. `max_depth` counts from the member: `1` is the child on that side alone, `2` adds its binary children, and so on.
+- An entry counts only if, when the activity happened, the side had already been assigned and its member was already in that leg. A side assigned — or a subtree adopted — later never captures earlier activity.
+- A reversal follows the activity it reverses, into the same leg or into none, and appears in the period of its own `effective_at`. An activity and its reversal in one period net out.
+- Both are plan-configurable: a rule, and so a qualification or rank ladder, can use them.
+
+These are structural figures: pairing, carry and binary commissions are later work.
 
 ### Your own metrics
 
@@ -816,7 +882,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, matrix slots, automatic placement strategies, binary pairing and carry-forward state, binary commissions, multiple binary trees per program, business component drivers, network types (matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

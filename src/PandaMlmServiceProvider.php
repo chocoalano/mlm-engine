@@ -13,6 +13,8 @@ use PandaBear\Mlm\Commission\Strategies\DirectSponsorFixedStrategy;
 use PandaBear\Mlm\Commission\Strategies\DirectSponsorProportionalStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelFixedStrategy;
 use PandaBear\Mlm\Commission\Strategies\UnilevelProportionalStrategy;
+use PandaBear\Mlm\Metrics\BinaryLeftVolumeMetric;
+use PandaBear\Mlm\Metrics\BinaryRightVolumeMetric;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
@@ -45,6 +47,8 @@ final class PandaMlmServiceProvider extends ServiceProvider
             $registry->register($app->make(MemberVolumeMetric::class));
             $registry->register($app->make(SponsorNetworkVolumeMetric::class));
             $registry->register($app->make(PlacementNetworkVolumeMetric::class));
+            $registry->register($app->make(BinaryLeftVolumeMetric::class));
+            $registry->register($app->make(BinaryRightVolumeMetric::class));
 
             return $registry;
         });

@@ -32,6 +32,6 @@ final class CustomMetricRegistrationTest extends TestCase
 
     public function test_the_built_ins_and_the_application_metric_sit_side_by_side(): void
     {
-        $this->assertSame(['custom.example', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $this->app->make(MetricRegistry::class)->keys());
+        $this->assertSame(['binary.left.volume', 'binary.right.volume', 'custom.example', 'member.volume', 'placement.network.volume', 'sponsor.network.volume'], $this->app->make(MetricRegistry::class)->keys());
     }
 }
