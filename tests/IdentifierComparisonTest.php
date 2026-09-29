@@ -5,12 +5,16 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Tests;
 
 use Carbon\CarbonImmutable;
+use PandaBear\Mlm\Commission\CommissionCandidate;
+use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\Wallet;
+use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
+use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Volume\Quantity;
 use PandaBear\Mlm\Volume\RecordVolume;
@@ -22,7 +26,9 @@ use PandaBear\Mlm\Volume\RecordVolume;
  */
 final class IdentifierComparisonTest extends DatabaseTestCase
 {
+    use BuildsCommissions;
     use BuildsLedgers;
+    use BuildsPlanDefinitions;
     use RecordsVolume;
 
     public function test_program_codes_are_compared_exactly(): void
@@ -86,5 +92,24 @@ final class IdentifierComparisonTest extends DatabaseTestCase
         $this->assertSame(1, LedgerTransaction::query()->where('idempotency_key', 'adjustment:adj-1')->count());
         $this->assertSame(0, Wallet::query()->where('currency', 'idr')->count());
         $this->assertSame(0, LedgerAccount::query()->where('key', 'ADJUSTMENT.CLEARING')->count());
+    }
+
+    public function test_calculation_keys_and_candidate_keys_are_compared_exactly(): void
+    {
+        $strategy = $this->scriptedStrategy();
+        $component = $this->commissionComponent(['strategy' => 'test.scripted', 'parameters' => []]);
+        $member = Member::factory()->for($component->planVersion->plan->program)->create();
+        $strategy->script = static fn (): iterable => [
+            new CommissionCandidate('ORDER:A-1', $member, '1', CarbonImmutable::parse('2026-06-30')),
+            new CommissionCandidate('order:a-1', $member, '2', CarbonImmutable::parse('2026-06-30')),
+        ];
+
+        $upper = $this->calculate($component, key: 'RUN:2026-06');
+        $lower = $this->calculate($component, key: 'run:2026-06');
+
+        $this->assertFalse($lower->is($upper));
+        $this->assertSame(['ORDER:A-1', 'order:a-1'], $upper->commissions()->pluck('candidate_key')->sort()->values()->all());
+        $this->assertSame(1, Commission::query()->where('calculation_run_id', $upper->id)->where('candidate_key', 'order:a-1')->count());
+        $this->assertSame(2, $strategy->calculations);
     }
 }

@@ -6,8 +6,14 @@ namespace PandaBear\Mlm\Tests;
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Finance\LedgerAccountManager;
+use PandaBear\Mlm\Finance\LedgerPostingInput;
+use PandaBear\Mlm\Finance\LedgerRecorder;
+use PandaBear\Mlm\Finance\PostLedgerTransaction;
+use PandaBear\Mlm\Finance\WalletManager;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\Program;
@@ -26,7 +32,7 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -251,6 +257,15 @@ final class MigrationTest extends TestCase
             'a ledger reversal names the transaction it reverses' => ['mlm_ledger_transactions', 'reversal_of_id', 'mlm_ledger_transactions'],
             'a posting belongs to its transaction' => ['mlm_ledger_postings', 'ledger_transaction_id', 'mlm_ledger_transactions'],
             'a posting names its account' => ['mlm_ledger_postings', 'ledger_account_id', 'mlm_ledger_accounts'],
+            'a run belongs to a program' => ['mlm_calculation_runs', 'program_id', 'mlm_programs'],
+            'a run names its plan version' => ['mlm_calculation_runs', 'plan_version_id', 'mlm_plan_versions'],
+            'a run names its component' => ['mlm_calculation_runs', 'plan_component_id', 'mlm_plan_components'],
+            'a run names its source account' => ['mlm_calculation_runs', 'source_ledger_account_id', 'mlm_ledger_accounts'],
+            'a commission belongs to its run' => ['mlm_commissions', 'calculation_run_id', 'mlm_calculation_runs'],
+            'a commission belongs to a program' => ['mlm_commissions', 'program_id', 'mlm_programs'],
+            'a commission belongs to a member' => ['mlm_commissions', 'member_id', 'mlm_members'],
+            'a commission names its ledger transaction' => ['mlm_commissions', 'ledger_transaction_id', 'mlm_ledger_transactions'],
+            'a commission names its reversal' => ['mlm_commissions', 'reversal_ledger_transaction_id', 'mlm_ledger_transactions'],
         ];
     }
 
@@ -359,6 +374,72 @@ final class MigrationTest extends TestCase
                 $this->assertLessThanOrEqual(63, strlen((string) ($key['name'] ?? '')), "{$table}: {$key['name']}");
             }
         }
+    }
+
+    public function test_the_calculation_tables_have_exactly_their_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'plan_version_id', 'plan_component_id', 'strategy', 'currency', 'source_ledger_account_id', 'from_at', 'until_at', 'idempotency_key', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_calculation_runs'),
+        );
+        $this->assertEqualsCanonicalizing(
+            [
+                'id', 'calculation_run_id', 'program_id', 'member_id', 'candidate_key', 'currency', 'amount_millionths', 'earned_at', 'trace',
+                'status', 'pending_at', 'approved_at', 'posted_at', 'cancelled_at', 'reversed_at',
+                'ledger_transaction_id', 'reversal_ledger_transaction_id', 'created_at', 'updated_at',
+            ],
+            Schema::getColumnListing('mlm_commissions'),
+        );
+        $this->assertEqualsCanonicalizing([['program_id', 'idempotency_key']], $this->uniqueIndexColumns('mlm_calculation_runs'));
+        $this->assertEqualsCanonicalizing([['calculation_run_id', 'candidate_key'], ['ledger_transaction_id'], ['reversal_ledger_transaction_id']], $this->uniqueIndexColumns('mlm_commissions'));
+
+        foreach (['mlm_calculation_runs', 'mlm_commissions'] as $table) {
+            $this->assertSame(['id'], collect(Schema::getIndexes($table))->firstWhere('primary', true)['columns'] ?? null, $table);
+        }
+
+        $amount = collect(Schema::getColumns('mlm_commissions'))->firstWhere('name', 'amount_millionths');
+        $this->assertIsArray($amount);
+        $this->assertStringContainsStringIgnoringCase('int', $amount['type_name']);
+    }
+
+    public function test_a_database_at_000016_upgrades_to_calculation_runs_without_touching_its_rows(): void
+    {
+        $migrations = array_map(
+            static fn (string $file): string => dirname(__DIR__).'/database/migrations/'.$file,
+            array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-6])_/', $file) === 1)),
+        );
+        $this->assertCount(16, $migrations);
+        $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
+        $this->assertFalse(Schema::hasTable('mlm_calculation_runs'));
+
+        // Everything the earlier phases write, the ledger included.
+        $program = Program::factory()->create();
+        [$alice, $bob] = Member::factory()->for($program)->count(2)->create()->all();
+        $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
+        $this->app->make(VolumeRecorder::class)->record(new RecordVolume($bob, 'sales', Quantity::of('150'), 'order', 'ORD-1', 'order:ORD-1', now()));
+        $version = $this->app->make(PlanVersionLifecycle::class)->draft($program->plans()->create(['code' => 'MAIN', 'name' => 'Main']));
+        $ladder = $this->app->make(PlanDefinitionEditor::class)->addComponent($version, 'career-ranks', 'rank.ladder', 'Career Ranks');
+        $this->app->make(PlanDefinitionEditor::class)->addRule($ladder, 'bronze', 'Bronze', RuleDefinition::all(MetricCondition::of('member.volume', ['type' => 'sales'], '>=', '100')), 10);
+        $this->app->make(PlanVersionLifecycle::class)->markValidated($version);
+        $clearing = $this->app->make(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'adjustment.clearing');
+        $wallet = $this->app->make(WalletManager::class)->open($alice, 'IDR');
+        $this->app->make(LedgerRecorder::class)->post(new PostLedgerTransaction($program, 'IDR', 'adjustment', 'manual', 'ADJ-1', 'adjustment:ADJ-1', now(), [
+            LedgerPostingInput::of($clearing, '-100'),
+            LedgerPostingInput::of(LedgerAccount::query()->where('wallet_id', $wallet->id)->sole(), '100'),
+        ]));
+        $tables = [...self::TABLES_BEFORE_THE_LEDGER, 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings'];
+        $before = $this->rowsOf($tables);
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        foreach (['mlm_calculation_runs', 'mlm_commissions'] as $table) {
+            $this->assertTrue(Schema::hasTable($table), $table);
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+
+        $this->assertSame($before, $this->rowsOf($tables));
     }
 
     public function test_posting_amounts_are_stored_as_whole_millionths_to_the_64_bit_limit(): void

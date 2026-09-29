@@ -13,8 +13,8 @@ use PandaBear\Mlm\Exceptions\UnknownPlanComponentDriver;
  *
  * Bound as an application singleton: its registrations are configuration,
  * made once while the application boots. The package registers its own rank
- * ladder, "rank.ladder"; an application or package adds its own drivers from
- * a service provider:
+ * ladder, "rank.ladder", and commission component, "commission.strategy"; an
+ * application or package adds its own drivers from a service provider:
  *
  *   $this->callAfterResolving(PlanComponentDriverRegistry::class, function (PlanComponentDriverRegistry $drivers): void {
  *       $drivers->register(new AcmeBonusDriver);

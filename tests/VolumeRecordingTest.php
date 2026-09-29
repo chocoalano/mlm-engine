@@ -168,6 +168,8 @@ final class VolumeRecordingTest extends DatabaseTestCase
             'an empty type' => ['', 'order', 'ORD-1', 'k', 'volume type'],
             'a type over 64 characters' => [str_repeat('a', 65), 'order', 'ORD-1', 'k', 'volume type'],
             'a type starting with a dot' => ['.sales', 'order', 'ORD-1', 'k', 'volume type'],
+            'a type with a trailing newline' => ["sales\n", 'order', 'ORD-1', 'k', 'volume type'],
+            'a source type with a trailing newline' => ['sales', "order\n", 'ORD-1', 'k', 'volume source type'],
             'an uppercase source type' => ['sales', 'Order', 'ORD-1', 'k', 'volume source type'],
             'an empty source id' => ['sales', 'order', '', 'k', 'volume source id'],
             'a blank source id' => ['sales', 'order', '   ', 'k', 'volume source id'],

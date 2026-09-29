@@ -56,7 +56,17 @@ final class QuantityTest extends TestCase
             'a decimal comma' => ['1,5', 'plain decimal'],
             'not a number' => ['abc', 'plain decimal'],
             'seven decimal places' => ['1.1234567', 'not rounded'],
+            'a trailing newline' => ["100\n", 'plain decimal'],
+            'a trailing newline after a fraction' => ["1.5\n", 'plain decimal'],
         ];
+    }
+
+    public function test_millionths_with_a_trailing_newline_are_refused(): void
+    {
+        $this->expectException(InvalidVolumeEntry::class);
+        $this->expectExceptionMessage('not a whole number of millionths');
+
+        Quantity::fromMillionths("100\n");
     }
 
     #[DataProvider('refused')]

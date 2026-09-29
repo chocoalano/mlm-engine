@@ -35,6 +35,7 @@ use PandaBear\Mlm\Planning\PlanVersionStatus;
  * @property CarbonImmutable|null $archived_at
  * @property-read Plan $plan
  * @property-read Collection<int, PlanComponent> $components
+ * @property-read Collection<int, CalculationRun> $calculationRuns
  */
 final class PlanVersion extends MlmModel
 {
@@ -100,6 +101,14 @@ final class PlanVersion extends MlmModel
     public function components(): HasMany
     {
         return $this->hasMany(PlanComponent::class)->orderBy('position')->orderBy('id');
+    }
+
+    /**
+     * @return HasMany<CalculationRun, $this>
+     */
+    public function calculationRuns(): HasMany
+    {
+        return $this->hasMany(CalculationRun::class);
     }
 
     public function isMutable(): bool

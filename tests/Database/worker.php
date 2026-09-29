@@ -22,6 +22,10 @@ declare(strict_types=1);
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\Foundation\Application;
+use PandaBear\Mlm\Calculation\CalculationContext;
+use PandaBear\Mlm\Calculation\CalculationEngine;
+use PandaBear\Mlm\Commission\CommissionPoster;
+use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
 use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Finance\PostLedgerTransaction;
@@ -29,9 +33,12 @@ use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
 use PandaBear\Mlm\Finance\WalletManager;
 use PandaBear\Mlm\Genealogy\PlacementGenealogy;
 use PandaBear\Mlm\Genealogy\SponsorGenealogy;
+use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
@@ -39,6 +46,8 @@ use PandaBear\Mlm\PandaMlmServiceProvider;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Database\ExternalDatabase;
+use PandaBear\Mlm\Tests\Fixtures\FixedCommissionStrategy;
+use PandaBear\Mlm\Tests\Fixtures\SnapshotProbeStrategy;
 use PandaBear\Mlm\Volume\Quantity;
 use PandaBear\Mlm\Volume\RecordVolume;
 use PandaBear\Mlm\Volume\ReverseVolume;
@@ -96,6 +105,11 @@ try {
         DB::commit();
     };
 
+    $calculate = static fn (array $job): string => app(CalculationEngine::class)->calculate(
+        PlanComponent::findOrFail($job['component']),
+        new CalculationContext(CarbonImmutable::parse($job['from']), CarbonImmutable::parse($job['until']), $job['key']),
+    )->getKey();
+
     $id = match ($job['op']) {
         'sponsor' => app(SponsorGenealogy::class)
             ->assignSponsor(Member::findOrFail($job['member']), Member::findOrFail($job['sponsor']))->getKey(),
@@ -133,6 +147,35 @@ try {
             idempotencyKey: $job['key'],
             occurredAt: CarbonImmutable::parse($job['occurred_at']),
         ))->getKey(),
+        'calculate' => (static function () use ($job, $calculate): string {
+            app(CommissionStrategyRegistry::class)->register(new FixedCommissionStrategy);
+
+            return $calculate($job);
+        })(),
+        // Reads, reports "first-read", waits for the test to commit changes
+        // from its own session, and reads again — under a session whose
+        // default isolation is READ COMMITTED, as an application may set it.
+        'calculate_snapshot' => (static function () use ($job, $calculate, $database, $emit): string {
+            DB::statement($database->engine === 'mysql'
+                ? 'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED'
+                : 'SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED');
+
+            app(CommissionStrategyRegistry::class)->register(new SnapshotProbeStrategy(app(MetricEngine::class), static function () use ($job, $emit): void {
+                $emit(['event' => 'first-read']);
+
+                $deadline = microtime(true) + 20;
+                while (! file_exists($job['signal'])) {
+                    if (microtime(true) > $deadline) {
+                        throw new RuntimeException('The test never committed its changes.');
+                    }
+                    usleep(20_000);
+                }
+            }));
+
+            return $calculate($job);
+        })(),
+        'commission_post' => app(CommissionPoster::class)->post(Commission::findOrFail($job['commission']))->getKey(),
+        'commission_reverse' => app(CommissionPoster::class)->reverse(Commission::findOrFail($job['commission']), CarbonImmutable::parse($job['occurred_at']))->getKey(),
         'hold_rows' => (static function () use ($job, $holdUntilWaitedOn): string {
             $holdUntilWaitedOn(static function () use ($job): void {
                 foreach ($job['rows'] as [$table, $row]) {

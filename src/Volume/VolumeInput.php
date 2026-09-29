@@ -24,7 +24,7 @@ final class VolumeInput
      * 1–64 characters: lowercase letters, digits, '.', '-' and '_',
      * starting with a letter or digit.
      */
-    private const IDENTIFIER = '/^[a-z0-9][a-z0-9._-]{0,63}$/';
+    private const IDENTIFIER = '/^[a-z0-9][a-z0-9._-]{0,63}$/D';
 
     /**
      * A machine identifier chosen by the application, such as a volume type

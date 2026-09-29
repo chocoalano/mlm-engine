@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Tests;
 
+use PandaBear\Mlm\Commission\CommissionComponentDriver;
 use PandaBear\Mlm\Exceptions\DuplicatePlanComponentDriver;
 use PandaBear\Mlm\Exceptions\InvalidPlanComponentDriver;
 use PandaBear\Mlm\Exceptions\UnknownPlanComponentDriver;
@@ -15,12 +16,13 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 final class PlanComponentDriverRegistryTest extends TestCase
 {
-    public function test_the_package_registers_its_rank_ladder_and_nothing_else(): void
+    public function test_the_package_registers_its_rank_ladder_and_commission_component_and_nothing_else(): void
     {
         $registry = $this->app->make(PlanComponentDriverRegistry::class);
 
-        $this->assertSame(['rank.ladder'], $registry->keys());
+        $this->assertSame(['commission.strategy', 'rank.ladder'], $registry->keys());
         $this->assertInstanceOf(RankLadderDriver::class, $registry->get('rank.ladder'));
+        $this->assertInstanceOf(CommissionComponentDriver::class, $registry->get('commission.strategy'));
     }
 
     public function test_no_application_driver_replaces_the_rank_ladder(): void
@@ -112,6 +114,7 @@ final class PlanComponentDriverRegistryTest extends TestCase
             'uppercase' => ['Acme.Bonus'],
             'a class name' => ['App\\Drivers\\Bonus'],
             'a space' => ['acme bonus'],
+            'a trailing newline' => ["acme.bonus\n"],
             'leading dot' => ['.acme'],
             'too long' => [str_repeat('a', 101)],
         ];
@@ -139,7 +142,7 @@ final class PlanComponentDriverRegistryTest extends TestCase
 
         $this->app->register(ExampleDriverServiceProvider::class);
 
-        $this->assertSame(['acme.example', 'rank.ladder'], $registry->keys());
+        $this->assertSame(['acme.example', 'commission.strategy', 'rank.ladder'], $registry->keys());
         $this->assertInstanceOf(CriteriaDriver::class, $registry->get('acme.example'));
     }
 }

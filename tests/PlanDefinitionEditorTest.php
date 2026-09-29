@@ -300,6 +300,7 @@ final class PlanDefinitionEditorTest extends DatabaseTestCase
             'SQL' => ['entry; DROP TABLE x', 'is not a key'],
             'interpolation' => ['${key}', 'is not a key'],
             'too long' => [str_repeat('k', 65), 'is not a key'],
+            'a trailing newline' => ["entry\n", 'is not a key'],
         ];
     }
 
@@ -335,6 +336,7 @@ final class PlanDefinitionEditorTest extends DatabaseTestCase
             'uppercase' => ['Acme.Bonus'],
             'a callable' => ['strtoupper()'],
             'too long' => [str_repeat('d', 101)],
+            'a trailing newline' => ["acme.bonus\n"],
         ];
     }
 

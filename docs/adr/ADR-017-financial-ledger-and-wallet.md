@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.7.
+Accepted — Phase 2.7. Amended in Phase 2.8: commission core now uses the ledger as its only financial posting path — `CommissionPoster` posts and reverses commissions through `LedgerRecorder` (ADR-018).
 
 ## Context
 

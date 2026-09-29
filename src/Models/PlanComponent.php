@@ -30,6 +30,7 @@ use PandaBear\Mlm\Planning\DefinitionInput;
  * @property int $position
  * @property-read PlanVersion $planVersion
  * @property-read Collection<int, PlanRule> $rules
+ * @property-read Collection<int, CalculationRun> $calculationRuns
  */
 final class PlanComponent extends MlmModel
 {
@@ -66,6 +67,14 @@ final class PlanComponent extends MlmModel
     public function rules(): HasMany
     {
         return $this->hasMany(PlanRule::class)->orderBy('position')->orderBy('id');
+    }
+
+    /**
+     * @return HasMany<CalculationRun, $this>
+     */
+    public function calculationRuns(): HasMany
+    {
+        return $this->hasMany(CalculationRun::class, 'plan_component_id');
     }
 
     /**

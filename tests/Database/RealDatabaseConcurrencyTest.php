@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Tests\Database;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
+use PandaBear\Mlm\Commission\CommissionStatus;
+use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
@@ -14,19 +17,25 @@ use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
 use PandaBear\Mlm\Finance\LedgerRecorder;
+use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
+use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
+use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
+use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Tests\DatabaseTestCase;
+use PandaBear\Mlm\Tests\Fixtures\SnapshotProbeStrategy;
 use PHPUnit\Framework\Attributes\Group;
 use Throwable;
 
@@ -48,8 +57,10 @@ use Throwable;
 #[Group('concurrency')]
 final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 {
+    use BuildsCommissions;
     use BuildsGenealogies;
     use BuildsLedgers;
+    use BuildsPlanDefinitions;
     use RecordsVolume;
 
     /**
@@ -612,6 +623,143 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $this->assertTrue($this->finish($holder)['ok']);
         $this->assertSame(2, DB::table('mlm_ledger_postings')->where('ledger_transaction_id', $posted->id)->count());
         $this->assertSame('10', $this->balances()->forAccount(LedgerAccount::query()->findOrFail($account))->value());
+    }
+
+    public function test_a_calculation_reads_one_snapshot_while_another_session_commits(): void
+    {
+        $this->strategy(new SnapshotProbeStrategy($this->app->make(MetricEngine::class), static function (): void {}));
+        $plan = Plan::factory()->create();
+        $alice = Member::factory()->for($plan->program)->create(['member_code' => 'ALICE']);
+        $bob = Member::factory()->for($plan->program)->create(['member_code' => 'BOB']);
+        $this->record($alice, '100', 'alice-1', at: CarbonImmutable::parse('2026-06-10'));
+        $component = $this->commissionComponent(['strategy' => 'test.snapshot', 'parameters' => []], $plan);
+        $signal = tempnam(sys_get_temp_dir(), 'mlm-snapshot-');
+        unlink($signal);
+
+        $worker = $this->start(['op' => 'calculate_snapshot', 'component' => $component->id, 'from' => '2026-06-01 00:00:00', 'until' => '2026-07-01 00:00:00', 'key' => 'snapshot:1', 'signal' => $signal]);
+        $this->awaitEvent($worker, 'first-read');
+
+        // Committed by this session while the calculation is between its
+        // two reads: more volume, and a new member.
+        $this->record($alice, '50', 'alice-2', at: CarbonImmutable::parse('2026-06-11'));
+        $this->record($bob, '70', 'bob-1', at: CarbonImmutable::parse('2026-06-12'));
+        Member::factory()->for($plan->program)->create(['member_code' => 'CAROL']);
+        touch($signal);
+
+        $result = $this->finish($worker);
+        unlink($signal);
+
+        $this->assertTrue($result['ok'], json_encode($result, JSON_THROW_ON_ERROR));
+        $commissions = Commission::query()->where('calculation_run_id', $result['id'])->orderBy('candidate_key')->get();
+        $this->assertSame(['member:ALICE', 'member:BOB'], $commissions->pluck('candidate_key')->all());
+
+        foreach ($commissions as $commission) {
+            $this->assertSame(['members' => 2, 'volume' => ['ALICE' => '100', 'BOB' => '0']], $commission->trace['first']);
+            $this->assertSame($commission->trace['first'], $commission->trace['second']);
+        }
+    }
+
+    public function test_identical_calculations_racing_store_one_run(): void
+    {
+        $component = $this->commissionComponent();
+        Member::factory()->for($component->planVersion->plan->program)->count(2)->create();
+        $job = $this->calculateJob($component, '2026-07-01 00:00:00');
+
+        $this->closeGate('mlm_calculation_runs');
+        $first = $this->start($job);
+        $second = $this->start($job);
+        $this->awaitWaitingOn(['mlm_calculation_runs', 'mlm_calculation_runs']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+        $this->assertSame($a['id'], $b['id']);
+        $this->assertSame([1, 2], [DB::table('mlm_calculation_runs')->count(), DB::table('mlm_commissions')->count()]);
+    }
+
+    public function test_conflicting_calculations_racing_store_one_and_refuse_the_other(): void
+    {
+        $component = $this->commissionComponent();
+        Member::factory()->for($component->planVersion->plan->program)->count(2)->create();
+
+        $this->closeGate('mlm_calculation_runs');
+        $first = $this->start($this->calculateJob($component, '2026-07-01 00:00:00'));
+        $second = $this->start($this->calculateJob($component, '2026-06-16 00:00:00'));
+        $this->awaitWaitingOn(['mlm_calculation_runs', 'mlm_calculation_runs']);
+
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused(
+            [$this->finish($first), $this->finish($second)],
+            ConflictingCalculationReplay::class,
+            'which differs in until',
+        );
+        $this->assertSame([1, 2], [DB::table('mlm_calculation_runs')->count(), DB::table('mlm_commissions')->count()]);
+    }
+
+    public function test_racing_posts_of_one_commission_move_its_money_once(): void
+    {
+        $component = $this->commissionComponent();
+        Member::factory()->for($component->planVersion->plan->program)->create();
+        $commission = $this->approved($this->calculate($component)->commissions()->sole());
+
+        $this->holdRow('mlm_commissions', $commission->id);
+        $first = $this->start(['op' => 'commission_post', 'commission' => $commission->id]);
+        $second = $this->start(['op' => 'commission_post', 'commission' => $commission->id]);
+        $this->awaitWaitingOn(['mlm_commissions', 'mlm_commissions']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+
+        $posted = Commission::query()->findOrFail($commission->id);
+        $this->assertSame(CommissionStatus::Posted, $posted->status);
+        $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('source_type', 'commission')->where('source_id', $commission->id)->count());
+        $this->assertSame('10.5', $this->balances()->forWallet(Wallet::query()->sole())->value());
+    }
+
+    public function test_racing_reversals_of_one_commission_reverse_it_once(): void
+    {
+        $component = $this->commissionComponent();
+        Member::factory()->for($component->planVersion->plan->program)->create();
+        $commission = $this->poster()->post($this->approved($this->calculate($component)->commissions()->sole()));
+        $job = ['op' => 'commission_reverse', 'commission' => $commission->id, 'occurred_at' => '2026-08-01 12:00:00'];
+
+        $this->holdRow('mlm_commissions', $commission->id);
+        $first = $this->start($job);
+        $second = $this->start($job);
+        $this->awaitWaitingOn(['mlm_commissions', 'mlm_commissions']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+
+        $this->assertSame(CommissionStatus::Reversed, Commission::query()->findOrFail($commission->id)->status);
+        $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('reversal_of_id', $commission->ledger_transaction_id)->count());
+        $this->assertSame('0', $this->balances()->forWallet(Wallet::query()->sole())->value());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function calculateJob(PlanComponent $component, string $until): array
+    {
+        return ['op' => 'calculate', 'component' => $component->id, 'from' => '2026-06-01 00:00:00', 'until' => $until, 'key' => 'run:2026-06'];
+    }
+
+    /**
+     * Holds one row locked, so every session that locks it waits.
+     */
+    private function holdRow(string $table, string $id): void
+    {
+        DB::connection($this->gateConnection())->beginTransaction();
+        DB::connection($this->gateConnection())->select("SELECT id FROM {$table} WHERE id = ? FOR UPDATE", [$id]);
     }
 
     /**

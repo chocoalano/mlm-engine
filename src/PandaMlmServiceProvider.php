@@ -7,6 +7,8 @@ namespace PandaBear\Mlm;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider;
+use PandaBear\Mlm\Commission\CommissionComponentDriver;
+use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Metrics\MemberVolumeMetric;
 use PandaBear\Mlm\Metrics\MetricRegistry;
 use PandaBear\Mlm\Metrics\PlacementNetworkVolumeMetric;
@@ -43,14 +45,20 @@ final class PandaMlmServiceProvider extends ServiceProvider
             return $registry;
         });
 
-        // Shared for the same reason. The built-in rank ladder goes through
-        // the same register() applications use for their own drivers.
+        // Shared for the same reason. The built-in rank ladder and commission
+        // component go through the same register() applications use for
+        // their own drivers.
         $this->app->singleton(PlanComponentDriverRegistry::class, static function (Application $app): PlanComponentDriverRegistry {
             $registry = new PlanComponentDriverRegistry;
             $registry->register($app->make(RankLadderDriver::class));
+            $registry->register($app->make(CommissionComponentDriver::class));
 
             return $registry;
         });
+
+        // Shared for the same reason. The package ships no strategy of its
+        // own: applications and later packages register theirs.
+        $this->app->singleton(CommissionStrategyRegistry::class);
 
         // Stateless services over the shared registries and the configured
         // connection.

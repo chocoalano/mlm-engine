@@ -124,7 +124,7 @@ final readonly class PlanDefinitionValidator
         return new PlanComponentDefinition($key, $driver, $name, $parameters, (int) $row->position, array_map(
             fn (object $rule): PlanRuleDefinition => $this->rule($version, "component \"{$key}\"", $rule),
             $rules,
-        ));
+        ), (string) $version->getKey(), $version->version);
     }
 
     private function rule(PlanVersion $version, string $component, object $row): PlanRuleDefinition

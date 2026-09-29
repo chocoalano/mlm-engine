@@ -30,7 +30,7 @@ final class MetricRegistry
      * 1–100 characters: lowercase letters, digits, ".", "-" and "_",
      * starting with a letter or digit.
      */
-    private const KEY = '/^[a-z0-9][a-z0-9._-]{0,99}$/';
+    private const KEY = '/^[a-z0-9][a-z0-9._-]{0,99}$/D';
 
     /**
      * @var array<string, Metric>

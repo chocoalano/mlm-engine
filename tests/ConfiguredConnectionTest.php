@@ -7,8 +7,11 @@ namespace PandaBear\Mlm\Tests;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\CalculationRun;
+use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
@@ -29,6 +32,7 @@ use PandaBear\Mlm\Qualification\QualificationContext;
 use PandaBear\Mlm\Qualification\QualificationEngine;
 use PandaBear\Mlm\Rank\RankContext;
 use PandaBear\Mlm\Rank\RankEngine;
+use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
@@ -41,14 +45,15 @@ use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
  */
 final class ConfiguredConnectionTest extends DatabaseTestCase
 {
+    use BuildsCommissions;
     use BuildsGenealogies;
     use BuildsLedgers;
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class];
 
     protected function defineEnvironment($app): void
     {
@@ -290,6 +295,27 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
             DB::connection('mlm')->table('mlm_ledger_postings')->count(),
         ]);
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_ledger_postings'));
+    }
+
+    public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void
+    {
+        $component = $this->commissionComponent();
+        Member::factory()->for($component->planVersion->plan->program)->count(2)->create();
+
+        $run = $this->calculate($component);
+        $commission = $this->poster()->post($this->approved($run->commissions()->firstOrFail()));
+        $reversed = $this->poster()->reverse($commission, CarbonImmutable::parse('2026-08-01'));
+
+        $this->assertSame(['mlm', 'mlm'], [$run->getConnectionName(), $reversed->getConnectionName()]);
+        $this->assertSame([1, 2], [DB::connection('mlm')->table('mlm_calculation_runs')->count(), DB::connection('mlm')->table('mlm_commissions')->count()]);
+        $this->assertSame(2, DB::connection('mlm')->table('mlm_ledger_transactions')->count());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commissions'));
+
+        // A transaction open on the package's connection is refused: the
+        // calculation must own its snapshot there.
+        $this->expectException(InvalidCalculationRun::class);
+
+        DB::connection('mlm')->transaction(fn () => $this->calculate($component, key: 'run:inside'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void

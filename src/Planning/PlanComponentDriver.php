@@ -13,7 +13,8 @@ use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
  *
  * A driver only judges its components' configuration, when a plan version is
  * validated. What a component does is the work of the engine for its key —
- * `RankEngine` for the package's "rank.ladder" — not of the driver.
+ * `RankEngine` for the package's "rank.ladder", `CalculationEngine` for its
+ * "commission.strategy" — not of the driver.
  */
 interface PlanComponentDriver
 {

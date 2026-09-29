@@ -100,6 +100,7 @@ final class MetricRegistryTest extends TestCase
             'a class name' => ['App\\Metrics\\Retention'],
             'a space' => ['member volume'],
             'a leading dot' => ['.volume'],
+            'a trailing newline' => ["member.volume\n"],
             'over 100 characters' => [str_repeat('a', 101)],
         ];
     }

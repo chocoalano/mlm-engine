@@ -6,7 +6,8 @@ namespace PandaBear\Mlm\Planning;
 
 /**
  * A component as its driver sees it: read-only data, never a model. Its
- * rules are in order — by position, then id — and already parsed.
+ * rules are in order — by position, then id — and already parsed. The
+ * version it belongs to is named when it is read from a stored version.
  */
 final readonly class PlanComponentDefinition
 {
@@ -21,6 +22,8 @@ final readonly class PlanComponentDefinition
         public array $parameters,
         public int $position,
         public array $rules,
+        public ?string $planVersionId = null,
+        public ?int $planVersion = null,
     ) {}
 
     public function rule(string $key): ?PlanRuleDefinition

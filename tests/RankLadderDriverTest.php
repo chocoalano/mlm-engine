@@ -113,7 +113,7 @@ final class RankLadderDriverTest extends DatabaseTestCase
         $this->addLadder($version, $this->ranks(bronze: 10, silver: 20));
 
         $this->assertSame(PlanVersionStatus::Validated, $this->lifecycle()->markValidated($version)->status);
-        $this->assertSame(['rank.ladder', 'test.criteria'], $this->app->make(PlanComponentDriverRegistry::class)->keys());
+        $this->assertSame(['commission.strategy', 'rank.ladder', 'test.criteria'], $this->app->make(PlanComponentDriverRegistry::class)->keys());
         $this->assertSame(['entry'], array_map(static fn (PlanComponentDefinition $component): string => $component->key, $this->criteriaDriver()->validated));
     }
 

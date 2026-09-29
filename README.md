@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Rank persistence and promotion, commission, payouts, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Concrete compensation strategies, rank persistence and promotion, payouts, unilevel, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -153,7 +153,7 @@ draft → validated → published → active → superseded → archived
 
 A version's definition is its **components**, each with **rules**. A draft is edited; from `validated` on, the definition never changes.
 
-- A component selects a **driver** by key: trusted code the application registers. The database stores the key, never a class name. The package ships one, `rank.ladder` (see [Rank](#rank)); applications register their own beside it.
+- A component selects a **driver** by key: trusted code the application registers. The database stores the key, never a class name. The package ships two, `rank.ladder` (see [Rank](#rank)) and `commission.strategy` (see [Calculation runs](#calculation-runs)); applications register their own beside them.
 - A component's parameters are plain JSON data for its driver. Nothing in them is ever run.
 - A rule is a tree in a small, safe language: groups (`all`, `any`) of conditions on registered metrics, with the operators `!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in` and `between` (both bounds included) and exact decimal operands. No expressions, formulas, SQL or code.
 - A rule may only name a metric that implements `PlanConfigurableMetric` — the three built-ins do — so its parameters can be checked before anything is resolved.
@@ -574,7 +574,108 @@ app(LedgerRecorder::class)->reverse(new ReverseLedgerTransaction(
 - **Exact amounts.** `FinancialAmount` holds six decimal places, never rounds and never accepts a float. One posting holds at most 9,223,372,036,854.775807 either way, so it can always be reversed; a balance has no limit.
 - **Replays are safe.** A request under an idempotency key already used in the program returns the stored transaction if it is identical — postings in any order — and throws `ConflictingLedgerReplay` otherwise. A rejected request writes nothing.
 - Every account is read from the database: it must belong to the transaction's program and hold its currency. A currency is three uppercase letters; the package keeps no currency list.
-- **No commission engine and no payout yet**, and no transfer, withdrawal, pending balance, fee, tax or rounding policy: those are later phases that post through this ledger.
+- **No payout yet**, and no transfer, withdrawal, pending balance, fee, tax or rounding policy: those are later phases that post through this ledger. Commissions reach wallets through it — see [Commission core](#commission-core).
+
+## Calculation runs
+
+A **calculation run** is one successful calculation of one commission component, chosen by you, of a validated plan version, over a closed range `[from, until)`. A component with the built-in driver `commission.strategy` selects a **commission strategy** — trusted code you register — and configures it:
+
+```php
+use PandaBear\Mlm\Commission\CommissionCalculationContext;
+use PandaBear\Mlm\Commission\CommissionCandidate;
+use PandaBear\Mlm\Commission\CommissionStrategy;
+use PandaBear\Mlm\Commission\CommissionStrategyDefinition;
+use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
+use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
+use PandaBear\Mlm\Models\Member;
+
+final class AcmeFlatRewardStrategy implements CommissionStrategy
+{
+    public function key(): string
+    {
+        return 'acme.flat-reward';
+    }
+
+    public function validate(CommissionStrategyDefinition $definition): void
+    {
+        if (array_keys($definition->parameters) !== ['amount']) {
+            throw InvalidPlanDefinition::input('acme.flat-reward', 'it takes one "amount".');
+        }
+    }
+
+    public function calculate(CommissionCalculationContext $context): iterable
+    {
+        foreach (Member::on($context->connection)->where('program_id', $context->program->id)->get() as $member) {
+            yield new CommissionCandidate(
+                key: "member:{$member->member_code}",
+                member: $member,
+                amount: $context->definition->parameters['amount'],
+                earnedAt: $context->until->subSecond(),
+                trace: ['member_code' => $member->member_code],
+            );
+        }
+    }
+}
+
+// In a service provider's register():
+$this->callAfterResolving(CommissionStrategyRegistry::class, function (CommissionStrategyRegistry $strategies): void {
+    $strategies->register(new AcmeFlatRewardStrategy);
+});
+```
+
+```php
+use PandaBear\Mlm\Calculation\CalculationContext;
+use PandaBear\Mlm\Calculation\CalculationEngine;
+
+app(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'commission.payable');
+
+$component = $editor->addComponent($draft, key: 'monthly-reward', driver: 'commission.strategy', name: 'Monthly reward', parameters: [
+    'strategy' => 'acme.flat-reward',
+    'currency' => 'IDR',
+    'source_account' => 'commission.payable',
+    'parameters' => ['amount' => '25'],
+]);
+$lifecycle->markValidated($draft);
+
+$run = app(CalculationEngine::class)->calculate($component, new CalculationContext(
+    from: $start,                            // required, included
+    until: $end,                             // required, excluded
+    idempotencyKey: 'monthly-reward:2026-06',
+));
+
+$run->commissions;                           // CALCULATED commissions, in candidate key order
+```
+
+- **No concrete compensation strategy is built in yet.** The package ships the `commission.strategy` component and the registry; strategies are yours, or later packages'. There is no formula language: strategies are code, configured by versioned parameters and rules.
+- The component's parameters are exactly `strategy`, `currency`, `source_account` and `parameters`. An unknown strategy, currency, account key or field blocks `markValidated()`.
+- The source account must already exist as a system account of the program in that currency — it is never created for you — and is fixed on the run.
+- **Only successful runs are stored**, whole: a failing strategy or any invalid candidate — zero or negative amount, too large for one posting, duplicate key, another program's member, a trace that is not inert JSON — stores nothing.
+- A calculation runs in its own transaction with one read snapshot, so every read of a strategy agrees; it refuses to start inside your transaction.
+- **Replaying an idempotency key returns the stored run without calculating again**, even if data changed; the same key with another component or range throws `ConflictingCalculationReplay`. A new calculation needs a new key.
+- Calculating moves no money, opens no wallet and approves nothing.
+
+## Commission core
+
+A commission is reviewed, then posted to the member's wallet through the ledger:
+
+```php
+use PandaBear\Mlm\Commission\CommissionLifecycle;
+use PandaBear\Mlm\Commission\CommissionPoster;
+
+$commission = $run->commissions->first();          // CALCULATED
+
+$commission = app(CommissionLifecycle::class)->markPending($commission);
+$commission = app(CommissionLifecycle::class)->approve($commission);
+$commission = app(CommissionPoster::class)->post($commission);     // POSTED: the wallet is credited
+
+$commission = app(CommissionPoster::class)->reverse($commission, now());   // REVERSED: the credit is undone
+```
+
+- `CALCULATED → PENDING → APPROVED → POSTED → REVERSED`, and `CANCELLED` from any status before `POSTED`. Nothing else: approval is explicit, and posting a commission that is not approved is refused. One commission at a time.
+- **Posting moves money only through the ledger**: one balanced transaction debiting the run's source account and crediting the member's wallet — opened if need be — by exactly the commission's amount, occurring when it was earned. Posting again returns the commission and moves nothing.
+- **Reversal** reverses that ledger transaction at the moment you give; the original is untouched, and a commission is reversed once.
+- What was calculated — member, amount, currency, earned-at, trace — never changes, and runs and commissions are read-only through Eloquent.
+- Held, available and paid statuses, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
 
 ## Configuration
 
@@ -594,7 +695,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, calculation periods and runs, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, commissions and bonuses, calculation runs, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: concrete compensation strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, unilevel, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

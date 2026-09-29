@@ -41,7 +41,7 @@ final readonly class Quantity implements Stringable
                 : 'it must be a decimal string or an integer');
         }
 
-        if (preg_match('/^(-?)(\d+)(?:\.(\d+))?$/', $value, $parts) !== 1) {
+        if (preg_match('/^(-?)(\d+)(?:\.(\d+))?$/D', $value, $parts) !== 1) {
             throw InvalidVolumeEntry::quantity($value, 'it is not a plain decimal such as "25" or "-0.125"');
         }
 
@@ -61,7 +61,7 @@ final readonly class Quantity implements Stringable
      */
     public static function fromMillionths(int|string $millionths): self
     {
-        if (preg_match('/^(-?)(\d+)$/', (string) $millionths, $parts) !== 1) {
+        if (preg_match('/^(-?)(\d+)$/D', (string) $millionths, $parts) !== 1) {
             throw InvalidVolumeEntry::quantity($millionths, 'it is not a whole number of millionths');
         }
 

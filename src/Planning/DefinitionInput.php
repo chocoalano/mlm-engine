@@ -39,7 +39,7 @@ final class DefinitionInput
      */
     public const PARAMETER_DEPTH = 32;
 
-    private const IDENTIFIER = '/^[a-z0-9][a-z0-9._-]*$/';
+    private const IDENTIFIER = '/^[a-z0-9][a-z0-9._-]*$/D';
 
     private const JSON = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION;
 
