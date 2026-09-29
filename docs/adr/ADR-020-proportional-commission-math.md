@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 3.0.
+Accepted — Phase 3.0. Amended in Phase 3.1: a proportional commission is clawed back by its stored, already-rounded amount; the proportional math is never run again (ADR-021).
 
 ## Context
 

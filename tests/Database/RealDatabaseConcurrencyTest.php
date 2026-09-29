@@ -18,6 +18,7 @@ use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
 use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Metrics\MetricEngine;
+use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
@@ -30,12 +31,14 @@ use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
+use PandaBear\Mlm\Tests\Concerns\BuildsFixedCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Tests\DatabaseTestCase;
 use PandaBear\Mlm\Tests\Fixtures\SnapshotProbeStrategy;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use Throwable;
 
@@ -58,6 +61,7 @@ use Throwable;
 final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 {
     use BuildsCommissions;
+    use BuildsFixedCommissions;
     use BuildsGenealogies;
     use BuildsLedgers;
     use BuildsPlanDefinitions;
@@ -743,6 +747,105 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $this->assertSame(CommissionStatus::Reversed, Commission::query()->findOrFail($commission->id)->status);
         $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('reversal_of_id', $commission->ledger_transaction_id)->count());
         $this->assertSame('0', $this->balances()->forWallet(Wallet::query()->sole())->value());
+    }
+
+    public function test_racing_clawbacks_of_one_reversal_correct_each_commission_once(): void
+    {
+        [$entry, $run] = $this->sourcedCommissions();
+        $posted = $this->poster()->post($this->approved($run->commissions()->firstOrFail()));
+        $reversal = $this->reverse($entry, 'refund:A', at: CarbonImmutable::parse('2026-04-10'));
+
+        $this->holdRow('mlm_volume_entries', $reversal->id);
+        $first = $this->start(['op' => 'clawback', 'reversal' => $reversal->id]);
+        $second = $this->start(['op' => 'clawback', 'reversal' => $reversal->id]);
+        $this->awaitWaitingOn(['mlm_volume_entries', 'mlm_volume_entries']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertTrue($a['ok'], json_encode($a, JSON_THROW_ON_ERROR));
+        $this->assertTrue($b['ok'], json_encode($b, JSON_THROW_ON_ERROR));
+        $this->assertSame(['2', '2'], [$a['id'], $b['id']]);
+        $this->assertSame(2, DB::table('mlm_commission_adjustments')->count());
+        $this->assertSame(1, DB::table('mlm_ledger_transactions')->where('reversal_of_id', $posted->ledger_transaction_id)->count());
+        $this->assertEqualsCanonicalizing(['reversed', 'cancelled'], DB::table('mlm_commissions')->pluck('status')->all());
+        $this->assertSame('0', $this->balances()->forWallet(Wallet::query()->sole())->value());
+    }
+
+    /**
+     * @return array<string, array{bool}>
+     */
+    public static function postAndClawbackOrders(): array
+    {
+        return ['the post waits first' => [true], 'the clawback waits first' => [false]];
+    }
+
+    /**
+     * Whichever wins the commission's lock, money moves at most once and the
+     * clawback always leaves it corrected: cancelled before any posting, or
+     * reversed after it — never posted and left standing.
+     */
+    #[DataProvider('postAndClawbackOrders')]
+    public function test_a_post_racing_a_clawback_never_leaves_the_commission_paid(bool $postFirst): void
+    {
+        [$entry, $run] = $this->sourcedCommissions();
+        $commission = $this->approved($run->commissions()->firstOrFail());
+        $reversal = $this->reverse($entry, 'refund:A', at: CarbonImmutable::parse('2026-04-10'));
+        $jobs = [
+            'post' => ['op' => 'commission_post', 'commission' => $commission->id],
+            'clawback' => ['op' => 'clawback', 'reversal' => $reversal->id],
+        ];
+
+        $this->holdRow('mlm_commissions', $commission->id);
+        $workers = [];
+
+        foreach ($postFirst ? ['post', 'clawback'] : ['clawback', 'post'] as $index => $name) {
+            $workers[$name] = $this->start($jobs[$name]);
+            $this->awaitWaitingOn(array_fill(0, $index + 1, 'mlm_commissions'));
+        }
+
+        $this->openGate();
+
+        [$post, $clawback] = [$this->finish($workers['post']), $this->finish($workers['clawback'])];
+        $shown = json_encode([$post, $clawback], JSON_THROW_ON_ERROR);
+        $status = DB::table('mlm_commissions')->where('id', $commission->id)->value('status');
+        $adjustment = DB::table('mlm_commission_adjustments')->where('commission_id', $commission->id)->sole();
+
+        $this->assertTrue($clawback['ok'], $shown);
+
+        if ($status === 'cancelled') {
+            // The clawback went first: nothing was ever posted.
+            $this->assertFalse($post['ok'], $shown);
+            $this->assertStringContainsString('is cancelled and cannot become posted', $post['message'], $shown);
+            $this->assertSame(['cancelled', null], [$adjustment->outcome, $adjustment->ledger_transaction_id]);
+            $this->assertSame(0, DB::table('mlm_ledger_transactions')->where('source_type', 'commission')->count());
+        } else {
+            // The post went first: the clawback reversed it.
+            $this->assertSame('reversed', $status, $shown);
+            $this->assertTrue($post['ok'], $shown);
+            $this->assertSame('reversed', $adjustment->outcome);
+            $this->assertSame(2, DB::table('mlm_ledger_transactions')->where('source_type', 'commission')->count());
+            $this->assertSame('0', $this->balances()->forWallet(Wallet::query()->sole())->value());
+        }
+
+        fwrite(STDERR, sprintf("\n[race %s] %s => %s\n", ExternalDatabase::selected()?->engine, $postFirst ? 'post waited first' : 'clawback waited first', $status));
+    }
+
+    /**
+     * An original entry, and a run paying two sponsors on it.
+     *
+     * @return array{VolumeEntry, CalculationRun}
+     */
+    private function sourcedCommissions(): array
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'ALICE', 'BOB', 'CHARLIE');
+        $this->sponsorAt($members['BOB'], $members['ALICE'], '2026-01-01 00:00:00');
+        $this->sponsorAt($members['CHARLIE'], $members['BOB'], '2026-01-01 00:00:00');
+        $entry = $this->sale($members['CHARLIE'], '150', '2026-01-10', 'order:A');
+        $component = $this->fixedComponent('unilevel.fixed', $this->unilevelParameters(['levels' => [['depth' => 1, 'amount' => '10'], ['depth' => 2, 'amount' => '5']]]), $plan);
+
+        return [$entry, $this->monthly($component, '2026-01')];
     }
 
     /**

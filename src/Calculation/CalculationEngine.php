@@ -260,6 +260,9 @@ final readonly class CalculationEngine
             'earned_at' => $candidate->earnedAt,
             'trace' => CommissionTrace::encode($candidate->trace),
             'status' => CommissionStatus::Calculated->value,
+            // Provenance, both or neither, as the candidate carries it.
+            'source_type' => $candidate->source?->type,
+            'source_id' => $candidate->source?->id,
             'created_at' => $now,
             'updated_at' => $now,
         ], $candidates);

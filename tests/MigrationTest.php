@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace PandaBear\Mlm\Tests;
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
+use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
+use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Finance\LedgerAccountManager;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
 use PandaBear\Mlm\Finance\LedgerRecorder;
@@ -17,6 +21,7 @@ use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\Program;
+use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Planning\Rules\MetricCondition;
@@ -28,12 +33,15 @@ use PandaBear\Mlm\Volume\RecordVolume;
 use PandaBear\Mlm\Volume\ReverseVolume;
 use PandaBear\Mlm\Volume\VolumeRecorder;
 use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 
 final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments'];
+
+    private const BUILT_IN_STRATEGIES = ['direct-sponsor.fixed', 'direct-sponsor.proportional', 'unilevel.fixed', 'unilevel.proportional'];
 
     public function test_migrate_creates_the_package_tables(): void
     {
@@ -267,6 +275,9 @@ final class MigrationTest extends TestCase
             'a commission belongs to a member' => ['mlm_commissions', 'member_id', 'mlm_members'],
             'a commission names its ledger transaction' => ['mlm_commissions', 'ledger_transaction_id', 'mlm_ledger_transactions'],
             'a commission names its reversal' => ['mlm_commissions', 'reversal_ledger_transaction_id', 'mlm_ledger_transactions'],
+            'an adjustment belongs to a program' => ['mlm_commission_adjustments', 'program_id', 'mlm_programs'],
+            'an adjustment corrects a commission' => ['mlm_commission_adjustments', 'commission_id', 'mlm_commissions'],
+            'an adjustment names its ledger reversal' => ['mlm_commission_adjustments', 'ledger_transaction_id', 'mlm_ledger_transactions'],
         ];
     }
 
@@ -388,7 +399,7 @@ final class MigrationTest extends TestCase
         $this->assertEqualsCanonicalizing(
             [
                 'id', 'calculation_run_id', 'program_id', 'member_id', 'candidate_key', 'currency', 'amount_millionths', 'earned_at', 'trace',
-                'status', 'pending_at', 'approved_at', 'posted_at', 'cancelled_at', 'reversed_at',
+                'status', 'pending_at', 'approved_at', 'posted_at', 'cancelled_at', 'reversed_at', 'source_type', 'source_id',
                 'ledger_transaction_id', 'reversal_ledger_transaction_id', 'created_at', 'updated_at',
             ],
             Schema::getColumnListing('mlm_commissions'),
@@ -451,6 +462,130 @@ final class MigrationTest extends TestCase
             ['program_id', 'type', 'source_type', 'effective_at'],
             collect(Schema::getIndexes('mlm_volume_entries'))->pluck('columns')->all(),
         );
+    }
+
+    public function test_commissions_carry_optional_provenance_and_adjustments_their_own_table(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertContains(['source_type', 'source_id', 'program_id'], collect(Schema::getIndexes('mlm_commissions'))->pluck('columns')->all());
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'commission_id', 'type', 'source_type', 'source_id', 'amount_millionths', 'occurred_at', 'outcome', 'ledger_transaction_id', 'trace', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_commission_adjustments'),
+        );
+        $this->assertEqualsCanonicalizing([['commission_id', 'type', 'source_type', 'source_id'], ['ledger_transaction_id']], $this->uniqueIndexColumns('mlm_commission_adjustments'));
+
+        foreach (['source_type', 'source_id'] as $column) {
+            $this->assertTrue(collect(Schema::getColumns('mlm_commissions'))->firstWhere('name', $column)['nullable'] ?? false, $column);
+        }
+    }
+
+    public function test_a_database_at_000019_gains_provenance_for_the_built_in_strategies_only(): void
+    {
+        [$entry, $commissions] = $this->legacyCommissions();
+        $before = $this->rowsOf(['mlm_programs', 'mlm_members', 'mlm_volume_entries', 'mlm_plan_versions', 'mlm_plan_components', 'mlm_calculation_runs', 'mlm_ledger_accounts']);
+        $commissionsBefore = $this->rowsOf(['mlm_commissions'])['mlm_commissions'];
+
+        $this->artisan('migrate')->assertSuccessful();
+
+        foreach ($commissions as $strategy => $id) {
+            $row = DB::table('mlm_commissions')->where('id', $id)->first();
+            $this->assertSame(
+                in_array($strategy, self::BUILT_IN_STRATEGIES, true) ? ['volume-entry', $entry->id] : [null, null],
+                [$row?->source_type, $row?->source_id],
+                $strategy,
+            );
+        }
+
+        // Nothing else of any commission, nor any other row, changed.
+        $this->assertSame($commissionsBefore, array_map(
+            static fn (array $row): array => array_diff_key($row, ['source_type' => 1, 'source_id' => 1]),
+            $this->rowsOf(['mlm_commissions'])['mlm_commissions'],
+        ));
+        $this->assertSame($before, $this->rowsOf(array_keys($before)));
+
+        // The backfilled provenance is what a later reversal is found by.
+        $reversal = $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
+        $result = $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal);
+
+        $this->assertSame(4, $result->count(CommissionAdjustmentOutcome::Cancelled));
+        $this->assertSame('calculated', DB::table('mlm_commissions')->where('id', $commissions['acme.custom'])->value('status'));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unprovableTraces(): array
+    {
+        return [
+            'a trace without a source' => ['{"strategy":"direct-sponsor.fixed"}'],
+            'a trace that is a list' => ['[1,2]'],
+            'a padded source id' => ['{"source":{"volume_entry_id":" 01padded"}}'],
+            'a numeric source id' => ['{"source":{"volume_entry_id":42}}'],
+            'a missing entry' => ['{"source":{"volume_entry_id":"01missingentry00000000000000"}}'],
+        ];
+    }
+
+    /**
+     * A built-in strategy's commission whose provenance cannot be proven
+     * stops the migration, writes none, and a rerun completes it once the
+     * row is corrected.
+     */
+    #[DataProvider('unprovableTraces')]
+    public function test_provenance_that_cannot_be_proven_stops_the_migration_and_a_rerun_completes_it(string $trace): void
+    {
+        [$entry, $commissions] = $this->legacyCommissions();
+        $good = DB::table('mlm_commissions')->where('id', $commissions['direct-sponsor.fixed'])->value('trace');
+        DB::table('mlm_commissions')->where('id', $commissions['unilevel.fixed'])->update(['trace' => $trace]);
+
+        try {
+            Artisan::call('migrate');
+            $this->fail('The migration backfilled unprovable provenance.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString("Commission [{$commissions['unilevel.fixed']}] cannot be given its source provenance", $exception->getMessage());
+        }
+
+        $this->assertSame(0, DB::table('migrations')->where('migration', 'like', '%000020%')->count());
+
+        if (Schema::hasColumn('mlm_commissions', 'source_type')) {
+            // MySQL keeps the columns of a failed run; the rows stay empty.
+            $this->assertSame(0, DB::table('mlm_commissions')->whereNotNull('source_type')->count());
+        }
+
+        DB::table('mlm_commissions')->where('id', $commissions['unilevel.fixed'])->update(['trace' => $good]);
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertSame(4, DB::table('mlm_commissions')->where('source_type', 'volume-entry')->where('source_id', $entry->id)->count());
+    }
+
+    /**
+     * @return array<string, array{bool, string}>
+     */
+    public static function misplacedSources(): array
+    {
+        return [
+            'an entry of another program' => [true, "not the commission's program"],
+            'a reversal instead of an original' => [false, 'which is a reversal, not an original entry'],
+        ];
+    }
+
+    #[DataProvider('misplacedSources')]
+    public function test_provenance_naming_another_programs_entry_or_a_reversal_stops_the_migration(bool $otherProgram, string $reason): void
+    {
+        [$entry, $commissions] = $this->legacyCommissions();
+        $named = $otherProgram
+            ? $this->app->make(VolumeRecorder::class)->record(new RecordVolume(Member::factory()->create(), 'sales', Quantity::of('5'), 'order', 'ORD-X', 'order:ORD-X', now()))
+            : $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
+        DB::table('mlm_commissions')->where('id', $commissions['unilevel.proportional'])->update(['trace' => json_encode(['source' => ['volume_entry_id' => $named->id]])]);
+
+        try {
+            Artisan::call('migrate');
+            $this->fail('Misplaced provenance was backfilled.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString($reason, $exception->getMessage());
+        }
+
+        $this->assertSame(0, DB::table('migrations')->where('migration', 'like', '%000020%')->count());
     }
 
     public function test_a_database_at_000018_gains_the_source_entry_index_without_touching_its_rows_and_can_lose_it_again(): void
@@ -584,6 +719,56 @@ final class MigrationTest extends TestCase
         foreach (self::TABLES as $table) {
             $this->assertFalse(Schema::hasTable($table), "{$table} survived the rollback.");
         }
+    }
+
+    /**
+     * A database at 000019 holding what the package wrote before commission
+     * provenance existed: one original entry, and one commission of each
+     * built-in source-entry strategy — plus one of an application's own —
+     * whose traces name it.
+     *
+     * @return array{VolumeEntry, array<string, string>} the entry, and commission ids by strategy
+     */
+    private function legacyCommissions(): array
+    {
+        $migrations = array_map(
+            static fn (string $file): string => dirname(__DIR__).'/database/migrations/'.$file,
+            array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-9])_/', $file) === 1)),
+        );
+        $this->assertCount(19, $migrations);
+        $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
+        $this->assertFalse(Schema::hasColumn('mlm_commissions', 'source_type'));
+
+        $program = Program::factory()->create();
+        [$alice, $bob] = Member::factory()->for($program)->count(2)->create()->all();
+        $entry = $this->app->make(VolumeRecorder::class)->record(new RecordVolume($bob, 'sales', Quantity::of('150'), 'order', 'ORD-1', 'order:ORD-1', now()));
+        $source = $this->app->make(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'commission.payable');
+        $version = $this->app->make(PlanVersionLifecycle::class)->draft($program->plans()->create(['code' => 'MAIN', 'name' => 'Main']));
+        $component = $this->app->make(PlanDefinitionEditor::class)->addComponent($version, 'direct', 'commission.strategy', 'Direct', [
+            'strategy' => 'direct-sponsor.fixed', 'currency' => 'IDR', 'source_account' => 'commission.payable',
+            'parameters' => ['volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '0', 'amount' => '10'],
+        ]);
+        $this->app->make(PlanVersionLifecycle::class)->markValidated($version);
+        $now = '2026-06-01 00:00:00';
+        $commissions = [];
+
+        foreach ([...self::BUILT_IN_STRATEGIES, 'acme.custom'] as $index => $strategy) {
+            $run = strtolower((string) Str::ulid());
+            DB::table('mlm_calculation_runs')->insert([
+                'id' => $run, 'program_id' => $program->id, 'plan_version_id' => $version->id, 'plan_component_id' => $component->id,
+                'strategy' => $strategy, 'currency' => 'IDR', 'source_ledger_account_id' => $source->id,
+                'from_at' => $now, 'until_at' => '2026-07-01 00:00:00', 'idempotency_key' => "legacy:{$index}", 'created_at' => $now, 'updated_at' => $now,
+            ]);
+            $commissions[$strategy] = strtolower((string) Str::ulid());
+            DB::table('mlm_commissions')->insert([
+                'id' => $commissions[$strategy], 'calculation_run_id' => $run, 'program_id' => $program->id, 'member_id' => $alice->id,
+                'candidate_key' => "volume-entry:{$entry->id}:depth:1", 'currency' => 'IDR', 'amount_millionths' => 10_000_000, 'earned_at' => $now,
+                'trace' => json_encode(['amount' => '10', 'source' => ['volume_entry_id' => $entry->id], 'strategy' => $strategy]),
+                'status' => 'calculated', 'created_at' => $now, 'updated_at' => $now,
+            ]);
+        }
+
+        return [$entry, $commissions];
     }
 
     /**

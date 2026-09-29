@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted — Phase 2.9. Amended in Phase 3.0: proportional siblings, `direct-sponsor.proportional` and `unilevel.proportional`, share this eligibility and attribution (ADR-020); the fixed strategies' semantics are unchanged.
+Accepted — Phase 2.9. Amended in Phase 3.0: proportional siblings, `direct-sponsor.proportional` and `unilevel.proportional`, share this eligibility and attribution (ADR-020); the fixed strategies' semantics are unchanged. Amended in Phase 3.1: the source-entry strategies persist relational provenance, `volume-entry` and the entry's id, used to claw commissions back when the entry is later reversed (ADR-021); their traces and awards are unchanged.
 
 ## Context
 

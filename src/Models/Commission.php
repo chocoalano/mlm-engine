@@ -6,7 +6,9 @@ namespace PandaBear\Mlm\Models;
 
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Casts\Attribute;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Commission\CommissionLifecycle;
 use PandaBear\Mlm\Commission\CommissionPoster;
@@ -18,7 +20,8 @@ use PandaBear\Mlm\Finance\FinancialAmount;
 /**
  * One commission a calculation run found: a member earned an exact, positive
  * amount in the run's currency, at a business moment, for the reasons its
- * trace records.
+ * trace records — and, when its strategy names it, the business record it
+ * was earned from (`source_type`, `source_id`).
  *
  * What was calculated never changes. Its status moves through
  * `CommissionLifecycle` — pending, approved, or cancelled before posting —
@@ -44,11 +47,14 @@ use PandaBear\Mlm\Finance\FinancialAmount;
  * @property CarbonImmutable|null $reversed_at
  * @property string|null $ledger_transaction_id
  * @property string|null $reversal_ledger_transaction_id
+ * @property string|null $source_type
+ * @property string|null $source_id
  * @property-read CalculationRun $run
  * @property-read Program $program
  * @property-read Member $member
  * @property-read LedgerTransaction|null $ledgerTransaction
  * @property-read LedgerTransaction|null $reversalLedgerTransaction
+ * @property-read Collection<int, CommissionAdjustment> $adjustments
  */
 final class Commission extends MlmModel
 {
@@ -137,6 +143,16 @@ final class Commission extends MlmModel
     public function reversalLedgerTransaction(): BelongsTo
     {
         return $this->belongsTo(LedgerTransaction::class, 'reversal_ledger_transaction_id');
+    }
+
+    /**
+     * Its corrections, oldest first.
+     *
+     * @return HasMany<CommissionAdjustment, $this>
+     */
+    public function adjustments(): HasMany
+    {
+        return $this->hasMany(CommissionAdjustment::class)->orderBy('id');
     }
 
     protected static function booted(): void

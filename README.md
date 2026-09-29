@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor and depth-based strategies, fixed or proportional with explicit rounding; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Commission clawback, rank persistence and promotion, payouts, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor and depth-based strategies, fixed or proportional with explicit rounding, and clawback of commissions whose source is later reversed; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume` and `placement.network.volume`, network volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Partial and manual commission adjustments, rank persistence and promotion, payouts, binary, matrix and hybrid networks, automatic placement and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -697,7 +697,7 @@ $run = app(CalculationEngine::class)->calculate($component, new CalculationConte
 - **Historical sponsors.** A sponsor assigned after the entry, or an upline joined above it later, earns nothing from it. The placement tree is never read.
 - **Depths are physical sponsor depths**: larger is further up. Only configured depths earn; there is no compression, and the order levels are listed in does not matter.
 - One commission per entry and depth, keyed `volume-entry:<entry id>:depth:<d>`, earned at the entry's moment, with a trace back to the entry and the sponsorship.
-- **Reversals as of the run's cutoff.** An entry reversed before the run's `until` earns nothing; a reversal at `until` or later belongs to a later range and changes nothing in this one. **A later reversal does not claw back** a commission already calculated or posted — that needs an adjustment policy that does not exist yet.
+- **Reversals as of the run's cutoff.** An entry reversed before the run's `until` earns nothing; a reversal at `until` or later belongs to a later range and changes nothing in this one. Commissions already calculated from it are corrected by an explicit clawback — see [Commission adjustments](#commission-adjustments--source-reversal-clawback).
 - Neither strategy takes rules: a component with rules is refused rather than having them ignored.
 
 ## Proportional commission math
@@ -749,7 +749,7 @@ A quantity and a `unit_amount` each have up to six decimal places, so their prod
 - An award that rounds to zero is no commission. `unit_amount` is a rate, not bounded by one posting; the rounded award is, and one too large fails the whole run.
 - Rounding is part of the versioned plan definition: never a package default, never chosen by currency. Every currency keeps six financial decimals.
 - Each commission's trace records `quantity`, `unit_amount`, the unrounded `exact_amount`, `rounding`, whether it was `rounded`, and the final `amount`.
-- A later reversal is still not clawed back.
+- A later reversal is clawed back by the stored, already-rounded amount — never recalculated.
 
 ## Commission core
 
@@ -774,6 +774,30 @@ $commission = app(CommissionPoster::class)->reverse($commission, now());   // RE
 - What was calculated — member, amount, currency, earned-at, trace — never changes, and runs and commissions are read-only through Eloquent.
 - Held, available and paid statuses, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
 
+## Commission adjustments & source reversal clawback
+
+When a business entry that commissions were paid on is reversed later, claw them back explicitly:
+
+```php
+use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
+
+$reversal = $volumeRecorder->reverse(new ReverseVolume(entry: $sale, sourceType: 'refund', sourceId: 'RF-1', idempotencyKey: 'refund:RF-1', occurredAt: now()));
+
+$result = app(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal);
+
+$result->adjustments;                              // one CommissionAdjustment per affected commission
+$result->count(CommissionAdjustmentOutcome::Reversed);
+```
+
+- **CALCULATED, PENDING or APPROVED → cancelled.** No money had moved, so none is debited.
+- **POSTED → reversed** through `CommissionPoster`, at the reversal's moment: the ledger reversal returns the money and the commission becomes REVERSED.
+- Already **CANCELLED** or **REVERSED** commissions are left as they are, and recorded as `already_cancelled` / `already_reversed`.
+- **Nothing is recalculated.** A clawback never runs genealogy, strategy configuration, quantity-to-money conversion or rounding again: it negates the stored commission amount, for the commission's own member. What was calculated is never rewritten; each correction is an immutable `CommissionAdjustment`.
+- **Idempotent, and meant to be rerun.** Calling it again returns the same adjustments and moves nothing. A historical run whose cutoff preceded the reversal may create commissions for the entry after an earlier call; calling again finds and corrects them.
+- One call corrects everything it finds, or nothing.
+- **Provenance.** The built-in source-entry strategies record `source_type = volume-entry` and the entry's id on each commission; the trace stays audit output and is not the lookup. Your own strategy opts in by passing `source: CommissionSourceReference::volumeEntry($entry)` to a candidate earned wholly from that entry. Commissions created before provenance existed are given it by the migration.
+- Recording volume never triggers this: call it where your application reverses volume.
+
 ## Configuration
 
 `config/mlm.php` holds **technical** settings only — where the package stores, queues and caches. Business plan rules such as pairing ratios, matrix sizes, commission percentages and rank requirements will never live in this file; they belong to versioned plans in the database.
@@ -792,7 +816,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, commission clawback on later reversals, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, partial, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, placement positions and slots, automatic placement strategies, business component drivers, network types (binary, matrix, hybrid), performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

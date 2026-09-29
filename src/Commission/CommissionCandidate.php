@@ -21,7 +21,9 @@ use PandaBear\Mlm\Models\Member;
  *   such as the business source it was earned from;
  * - its amount is exact and strictly positive, and fits one ledger posting;
  * - it was earned at an explicit business moment, never "now";
- * - its trace is inert JSON data, kept in canonical order.
+ * - its trace is inert JSON data, kept in canonical order;
+ * - optionally, the business record it was earned from, kept on the
+ *   commission as provenance (ADR-021).
  */
 final readonly class CommissionCandidate
 {
@@ -39,6 +41,7 @@ final readonly class CommissionCandidate
     /**
      * @param  FinancialAmount|string|int  $amount  e.g. "12.5"
      * @param  array<array-key, mixed>  $trace  why it was earned: source ids, rule keys, values as strings
+     * @param  CommissionSourceReference|null  $source  the record it was earned from; `volume-entry` opts into clawback
      */
     public function __construct(
         string $key,
@@ -46,6 +49,7 @@ final readonly class CommissionCandidate
         FinancialAmount|string|int $amount,
         DateTimeInterface $earnedAt,
         array $trace = [],
+        public ?CommissionSourceReference $source = null,
     ) {
         if (! FinanceInput::isText($key, FinanceInput::IDEMPOTENCY_KEY_LENGTH)) {
             throw InvalidCommissionCandidate::key($key);

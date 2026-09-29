@@ -132,6 +132,26 @@ final readonly class CommissionPoster
         });
     }
 
+    /**
+     * The ledger transaction that reversed a REVERSED commission, once it is
+     * checked to reverse exactly the transaction that posted it.
+     *
+     * @throws InvalidCommissionTransition unless the commission is REVERSED
+     * @throws InvalidCommissionPosting when its ledger transactions do not match it
+     */
+    public function verifiedReversal(Commission $commission): LedgerTransaction
+    {
+        $db = $commission->getConnection();
+
+        if ($commission->status !== CommissionStatus::Reversed) {
+            throw InvalidCommissionTransition::from($commission, CommissionStatus::Reversed);
+        }
+
+        $this->assertPosted($db, $commission);
+
+        return $this->reversalOf($db, $commission);
+    }
+
     public static function postingKey(Commission $commission): string
     {
         return 'commission.post.'.$commission->getKey();

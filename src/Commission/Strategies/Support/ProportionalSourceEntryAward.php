@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Commission\Strategies\Support;
 
 use PandaBear\Mlm\Commission\CommissionCandidate;
+use PandaBear\Mlm\Commission\CommissionSourceReference;
 use PandaBear\Mlm\Finance\FinancialAmount;
 use PandaBear\Mlm\Finance\FinancialRoundingMode;
 use PandaBear\Mlm\Models\Member;
@@ -60,6 +61,7 @@ final class ProportionalSourceEntryAward
                 ],
                 'amount' => $award->amount->value(),
             ],
+            source: CommissionSourceReference::volumeEntry($entry),
         );
     }
 }

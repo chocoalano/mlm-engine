@@ -24,6 +24,7 @@ use Illuminate\Support\Facades\DB;
 use Orchestra\Testbench\Foundation\Application;
 use PandaBear\Mlm\Calculation\CalculationContext;
 use PandaBear\Mlm\Calculation\CalculationEngine;
+use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionPoster;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
@@ -174,6 +175,7 @@ try {
 
             return $calculate($job);
         })(),
+        'clawback' => (string) app(CommissionAdjustmentEngine::class)->processVolumeReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'commission_post' => app(CommissionPoster::class)->post(Commission::findOrFail($job['commission']))->getKey(),
         'commission_reverse' => app(CommissionPoster::class)->reverse(Commission::findOrFail($job['commission']), CarbonImmutable::parse($job['occurred_at']))->getKey(),
         'hold_rows' => (static function () use ($job, $holdUntilWaitedOn): string {

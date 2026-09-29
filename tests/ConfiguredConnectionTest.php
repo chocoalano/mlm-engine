@@ -7,11 +7,14 @@ namespace PandaBear\Mlm\Tests;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
+use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
+use PandaBear\Mlm\Models\CommissionAdjustment;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
@@ -51,9 +54,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class];
 
     protected function defineEnvironment($app): void
     {
@@ -360,6 +363,28 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(['mlm', $members['ALICE']->id, '2.895897'], [$commission->getConnectionName(), $commission->member_id, $commission->amount->value()]);
         $this->assertSame('2.895896651426', $commission->trace['calculation']['exact_amount']);
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commissions'));
+    }
+
+    public function test_clawbacks_find_correct_and_record_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'ALICE', 'BOB');
+        $this->sponsorTree($members, ['ALICE' => ['BOB']]);
+        $entry = $this->record($members['BOB'], '150', 'order:A', at: CarbonImmutable::now()->addMinute());
+        $component = $this->commissionComponent(['strategy' => 'direct-sponsor.fixed', 'parameters' => [
+            'volume_type' => 'sales', 'source_type' => 'order', 'minimum_quantity' => '100', 'amount' => '10',
+        ]], $plan);
+        $run = $this->calculate($component, CarbonImmutable::now()->subDay()->format('Y-m-d H:i:s'), CarbonImmutable::now()->addDay()->format('Y-m-d H:i:s'));
+        $this->poster()->post($this->approved($run->commissions()->sole()));
+
+        $reversal = $this->reverse($entry, 'refund:A', at: CarbonImmutable::now()->addDays(2));
+        $result = $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal);
+
+        $this->assertSame(1, $result->count(CommissionAdjustmentOutcome::Reversed));
+        $this->assertSame('mlm', $result->adjustments[0]->getConnectionName());
+        $this->assertSame(1, DB::connection('mlm')->table('mlm_commission_adjustments')->count());
+        $this->assertSame('reversed', DB::connection('mlm')->table('mlm_commissions')->value('status'));
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commission_adjustments'));
     }
 
     public function test_a_connection_set_on_the_model_still_wins(): void
