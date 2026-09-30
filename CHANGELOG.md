@@ -25,6 +25,8 @@ The road from the v0.1.0 foundation to the first production release. Every entry
 ### Changed
 
 - The distributed archive leaves development material out (`.gitattributes` `export-ignore`: tests, tooling configuration, the lock file, scripts).
+- Verified on PHP 8.2 and 8.4, Laravel 12 and 13, Panda Panel 0.5.7 and 0.5.8, and installed from the distributed archive into clean Laravel 12 and 13 applications; the full suite runs on MySQL 9.6 and PostgreSQL 18.4. MySQL 8 and PostgreSQL 15 are not yet verified. No runtime change was needed. See `docs/production-readiness.md`.
+- The panel-authorization test no longer relies on Laravel 13's 401 for a guest, which Laravel 12 does not give, so the suite passes on both.
 
 ### Upgrading from v0.1.0
 

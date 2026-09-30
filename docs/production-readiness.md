@@ -1,19 +1,23 @@
 # Production readiness
 
-The evidence behind a Panda MLM release: what is supported, what was verified and how, the invariants the suite holds, and what is still open. Prepared in Phase 4.0A (package hardening); Phase 4.0B completes the compatibility matrix and the release-candidate gate.
+The evidence behind a Panda MLM release: what is supported, what was verified and how, the invariants the suite holds, and what is still open. Prepared in Phase 4.0A (package hardening) and completed in Phase 4.0B (the compatibility matrix and the release-candidate gate).
 
 ## Supported platforms
 
-| | Declared | Verified | How |
-| --- | --- | --- | --- |
-| PHP | `^8.2` | 8.4.22 | full suite. **8.2 and 8.3 have not run** — no runtime was available. A static review found no syntax or function newer than 8.2, and `ArchitectureTest` keeps it that way. |
-| Laravel | 12, 13 (`illuminate/*` `^12.0\|^13.0`) | 13.33.0 | full suite (Testbench 11.3). Laravel 12 is claimed by the constraint; re-running it is a Phase 4.0B cell. |
-| Panda Panel | `chocoalano/panel` `^0.5.7` | 0.5.8 and 0.5.7 | full suite on 0.5.8; the Panel and plugin suites on 0.5.7 (a scratch install pinned to it). 0.5.8 adds only a `MoneyInput` field, which the plugin does not use. `PandaPanelContractTest` names every API the plugin calls. |
-| SQLite | bundled | 3.53.4 | full suite (every test run). |
-| MySQL | — | 9.6.0 | full suite (Phase 3.9B), targeted Phase 4.0A tests. **MySQL 8 has not run.** |
-| PostgreSQL | — | 18.4 | full suite (Phase 3.9B), targeted Phase 4.0A tests. |
+Three kinds of evidence, never merged: **full suite** — all 1,936 tests on that version; **compatibility-tested** — a named subset on that version; **not executed** — nothing has run there, so any support is inferred.
 
-The supported minimum database versions are a Phase 4.0B decision, based on Laravel's own support and on what is actually run — not on the versions installed locally.
+| | Declared | Full suite | Compatibility-tested | Not executed |
+| --- | --- | --- | --- | --- |
+| PHP | `^8.2` | **8.2.33** (the declared minimum) and 8.4.22 | 8.2.33 against PostgreSQL 18.4: the real-session concurrency and the production tests; clean installs on 8.2 and 8.4 | 8.3, 8.5 |
+| Laravel | 12, 13 (`illuminate/*` `^12.0\|^13.0`) | 12.69.3, 12.69.0; 13.33.0, 13.30.0 | clean installs on 12.69.3 and 13.34.0 | below 12.69.0 and 13.30.0 (see below) |
+| Panda Panel | `chocoalano/panel` `^0.5.7` | 0.5.7 and 0.5.8 | `PandaPanelContractTest` on both; a clean install on each | — |
+| SQLite | bundled with PHP | 3.53.4, in every cell | — | — |
+| MySQL | — | **9.6.0** | — | **8.x** — no MySQL 8 runtime was available |
+| PostgreSQL | — | **18.4** | — | **15** — no PostgreSQL 15 runtime was available |
+
+**Databases.** Full-suite verified: MySQL 9.6.0 and PostgreSQL 18.4. No older version was compatibility-tested. MySQL 8 and PostgreSQL 15, the intended production floors, are **not runtime-verified**: the inference is the SQL the package runs — JSON columns, `FOR UPDATE` and shared row locks, plain aggregates and column comparisons, and no common table expression, window function, `RETURNING`, upsert or `SKIP LOCKED` — which both support. Run `composer test:mysql` or `composer test:pgsql` against an older server before relying on it. SQLite is for development, tests and lightweight use; its `SUM` overflows past 64 bits, so those exact totals are checked on MySQL and PostgreSQL only (ADR-010).
+
+**Lowest installable framework.** `--prefer-lowest` resolves Laravel 12.69.0 and 13.30.0, not 12.0 and 13.0: Composer (2.10.1 here) refuses every earlier release by default because each carries a published security advisory. The package's `^12.0|^13.0` is left as it is — Composer's advisory policy, not Panda MLM, sets that floor.
 
 ## Financial invariants
 
@@ -75,23 +79,27 @@ Every externally retryable write takes a key; the same key with the same facts r
 
 Reviewed against the queries the package runs. `QueryPlanTest` asks MySQL and PostgreSQL to plan five critical reads — an anchor's genealogy descendants as of a moment, a member's volume in a range, a program's period timeline, an account's postings, a batch's items — and each is served by an index on both.
 
-Not indexed, deliberately left for measured need: payout requests and commissions by `status` alone. The overview's counts and the status filters read them by status; at the volumes expected for v1 this is a short scan, and an index should follow a measured query, not precede it.
+Not indexed, deliberately left for measured need: payout requests and commissions by `status` alone. The overview's counts and the status filters read them by status. Measured on MySQL 9.6 in Phase 4.0B, over the 5,000 commissions the performance smoke leaves behind: a count by status is a table scan of 1.0–1.3 ms, and the commission list filtered by status, sorted by `earned_at` and cut to a page, 5.2 ms. Not a concern at that size; an index should follow a measured query, not precede it.
 
 ## Performance sanity
 
-Opt-in: `MLM_PERFORMANCE_SMOKE=1 composer test -- --filter=PerformanceSmoke`. On SQLite (Phase 4.0A, PHP 8.4, laptop):
+Opt-in: `MLM_PERFORMANCE_SMOKE=1 composer test -- --filter=PerformanceSmoke`. On MySQL or PostgreSQL, give PHP room for the harness — the test's own query log and the data it keeps — with `php -d memory_limit=256M vendor/bin/phpunit --filter=PerformanceSmoke` and `MLM_TEST_DATABASE` set: at PHP's default 128 MB it stops with a memory error on MySQL, where SQLite's in-memory database does not count against PHP's limit.
 
-| Step | Time | Queries |
-| --- | --- | --- |
-| 2,000 members in a ten-wide sponsor tree | 14.9 s | — |
-| 5,000 volume entries | 10.6 s | — |
-| 1,000 funded wallets (2,000 postings) | 7.5 s | — |
-| `sponsor.network.volume` of the root | 0.01 s | 2 |
-| balances of 1,000 wallets | 0.07 s | 4 |
-| genealogy explorer, 5 levels, capped at 500 | 0.03 s | 8 |
-| direct sponsor calculation of 5,000 entries | 6.3 s | 5,065 |
+| Step | SQLite (4.0A) | MySQL 9.6 (4.0B) | Queries |
+| --- | --- | --- | --- |
+| 2,000 members in a ten-wide sponsor tree | 14.9 s | 19.2 s | — |
+| 5,000 volume entries | 10.6 s | 17.7 s | — |
+| 1,000 funded wallets (2,000 postings) | 7.5 s | 12.9 s | — |
+| `sponsor.network.volume` of the root | 0.01 s | 0.13 s | 2 |
+| balances of 1,000 wallets | 0.07 s | 0.08 s | 4 |
+| genealogy explorer, 5 levels, capped at 500 | 0.03 s | 0.12 s | 8 |
+| direct sponsor calculation of 5,000 entries | 6.3 s | 3.7 s | 5,065 / 5,066 |
+
+PHP 8.4 on a laptop, Xdebug off for the MySQL run.
 
 **Known:** the direct sponsor and unilevel strategies look each eligible entry's sponsor line up on its own — one to two queries per entry. Linear, not set-based as the matrix strategies are (`MatrixAncestry`). Correct, and acceptable at this size; a set-based sponsor ancestry reader is the fix if calculation time becomes a constraint.
+
+**Memory.** A calculation run holds its candidates while it runs: measured on MySQL, the direct sponsor calculation of 5,000 entries peaked 37 MB above the process's baseline and released all but about 1 MB when it returned — about 7.5 KB per eligible entry, linear, no leak. Size `memory_limit` for the largest period a worker calculates.
 
 ## Security boundaries
 
@@ -107,26 +115,58 @@ Opt-in: `MLM_PERFORMANCE_SMOKE=1 composer test -- --filter=PerformanceSmoke`. On
 - Every action opts out of the panel's transaction (`databaseTransaction(false)`): the services own theirs.
 - Slugs are prefixed `mlm-`; icons are ones the framework declares, because `panel:icons` does not scan plugins.
 - English and Indonesian carry the same keys, and every key the code uses exists.
+- **Guests.** The plugin refuses a guest on Laravel 12 and 13 alike; the host renders the refusal. When the panel has no login of its own, Laravel 12 redirects a guest's page request to the application's `login` route — an application without one answers with an error — while Laravel 13 answers 401. Give the panel `->auth()` or the application a `login` route.
+- **Caches.** Panel routes point at controllers, and `config/mlm.php` holds no closures: `config:cache` and `route:cache` both work, checked in every clean install below.
 
-## Clean install procedure (Phase 4.0B)
+## Compatibility matrix (Phase 4.0B)
 
-`scripts/clean-install-smoke.sh` (development only, not in the archive) installs the working tree into a fresh Laravel application in a temporary directory and checks: the Composer install, provider discovery, configuration, migrations, the plugin on a panel, and the main services resolving. Run it once per Laravel version:
+Each cell is its own install. Every run reports every PHP error level, and Laravel's deprecation log was captured with traces; a deliberate deprecation was confirmed to reach it. **No deprecation, warning or notice comes from package code in any cell.**
+
+| Cell | PHP | Laravel | Testbench | PHPUnit | Panda Panel | Evidence |
+| --- | --- | --- | --- | --- | --- | --- |
+| A — minimum | 8.2.33 | 12.69.3 | 10.12.0 | 11.5.56 | 0.5.7 | full suite on SQLite; on PostgreSQL 18.4 the 58 real-session concurrency tests and the 35 production tests (with the v0.1.0 upgrade); clean install |
+| A — lowest | 8.2.33 | 12.69.0 | 10.0.0 | 11.5.50 | 0.5.7 | full suite on SQLite, every dependency at its lowest (`--prefer-lowest --prefer-stable`) |
+| B | 8.4.22 | 12.69.3 | 10.12.0 | 13.1.14 | 0.5.8 | full suite on SQLite; clean install |
+| C — canonical | 8.4.22 | 13.33.0 | 11.3.0 | 13.3.5 | 0.5.8 | full suite on SQLite, MySQL 9.6.0 and PostgreSQL 18.4; clean install (Laravel 13.34.0) |
+| C — lowest | 8.4.22 | 13.30.0 | 11.0.0 | 11.5.50 | 0.5.7 | full suite on SQLite, every dependency at its lowest |
+
+The full suite is 1,936 tests. On SQLite 68 are skipped by design: the 58 real-session concurrency tests, 7 exact totals past 64 bits, the isolation-level test, the query plans and the opt-in performance smoke. The one deprecation source seen is vendor code: in *C — lowest*, the lowest Symfony Translation 7.x and Faker trip PHP 8.4's implicitly-nullable-parameter deprecation 17 times; the current releases of both do not.
+
+The final gate, on cell C with the release candidate's code, each engine once and one after the other:
+
+| Engine | Tests | Assertions | Skipped | Duration |
+| --- | --- | --- | --- | --- |
+| SQLite 3.53.4 | 1,936 | 37,944 | 68 | 1 min 45 s |
+| MySQL 9.6.0 | 1,936 | 38,519 | 2 | 3 h 42 min |
+| PostgreSQL 18.4 | 1,936 | 38,445 | 2 | 11 min 31 s |
+
+On MySQL and PostgreSQL the two skips are the opt-in performance smoke and a test that only SQLite runs. The MySQL run shared its server with another project's parallel test suite, which accounts for its length (Phase 3.9B's full MySQL run took 56 minutes).
+
+One compatibility defect was found, in the test harness: a guest's panel request asserted Laravel 13's 401, which Laravel 12 does not give (see *Guests* above). The test now asks for JSON, answered 401 by both. No runtime code changed.
+
+## Clean install (Phase 4.0B)
+
+`scripts/clean-install-smoke.sh` (development only, not in the archive) exports the working tree with `git archive` — the files a Packagist user receives, `.gitattributes` applied — installs that archive into a fresh `laravel/laravel` application through a Composer package repository, and runs `scripts/clean-install-smoke.php` inside it:
+
+- the provider discovered; the `mlm` configuration loaded; all 40 migrations shipped, found by the migrator and run; every package table created;
+- `PandaMlmPlugin::make()` on the application's own panel — a `PanelProvider` listed in `config/panda-panel.php` — with a route for each of the plugin's twelve screens;
+- the English and Indonesian translations; every public service resolving; no development file installed;
+- a whole cycle on the backend with no panel and nobody signed in: program, members, sponsor and placement, an active plan, a sale, a period calculated, finalized and released, the commission posted, a payout requested, approved, processed and settled, the wallet back to zero;
+- the same checks under `config:cache`, under `route:cache` and after `composer dump-autoload --optimize`;
+- `mlm.database.connection` set to a second connection, under `config:cache`: every package table and row on it, none on the default connection.
 
 ```bash
 scripts/clean-install-smoke.sh 13
-scripts/clean-install-smoke.sh 12
+scripts/clean-install-smoke.sh 12 --php /opt/homebrew/opt/php@8.2/bin/php --panel 0.5.7
 ```
 
-## Phase 4.0B matrix
+| Application | PHP | Panda Panel | Result |
+| --- | --- | --- | --- |
+| Laravel 12.69.3 | 8.2.33 | 0.5.7 | passed, 66 checks |
+| Laravel 12.69.3 | 8.4.22 | 0.5.8 | passed, 66 checks |
+| Laravel 13.34.0 | 8.4.22 | 0.5.8 | passed, 66 checks |
 
-| Cell | Status |
-| --- | --- |
-| PHP 8.2, Laravel 12, SQLite | **to run** — needs a PHP 8.2 runtime |
-| PHP 8.4, Laravel 12, SQLite | to run |
-| PHP 8.4, Laravel 13, SQLite / MySQL 9.6 / PostgreSQL 18 | passing (Phase 3.9B full, 4.0A full SQLite) |
-| MySQL 8 | decide: run, or document 9.x as the tested line |
-| Panda Panel 0.5.7 lowest | passing (Panel and plugin suites) |
-| Clean install into Laravel 12 and 13 | to run |
+The archive holds 417 files — `composer.json`, `LICENSE`, `README.md`, `CHANGELOG.md`, `config/`, `database/` (40 migrations, 4 factories), `resources/lang/`, `src/` and `docs/` — and no tests, scripts, tooling configuration, lock file, IDE or OS files. `git archive` and `composer archive` produce the same file list.
 
 ## Known limitations
 
@@ -139,11 +179,20 @@ Deliberately out of scope for v1, not defects:
 - no manual or positive commission adjustments, no persisted ranks;
 - the Plan Builder edits one group of rule conditions; nested groups are removed and re-added;
 - the genealogy explorer is a table-drawn tree — Panda Panel cannot load Vue components from a plugin;
+- the direct sponsor and unilevel strategies read each entry's sponsor line on its own — linear, not set-based — and a calculation run holds its candidates in memory, about 7.5 KB per eligible entry (see *Performance sanity*);
+- payout requests and commissions have no index on `status` alone (see *Indexes and query plans*);
+- MySQL 8, PostgreSQL 15, PHP 8.3 and PHP 8.5 have not run the suite (see *Supported platforms*);
 - no continuous integration in the repository: the suite runs locally.
 
-## Open blockers for v1.0
+## Release blockers
 
-1. **PHP 8.2 runtime unverified.** The package declares `^8.2`; it has only run on 8.4. Run the suite on 8.2 (Phase 4.0B), or raise the constraint deliberately.
-2. **Laravel 12 not re-run in Phase 4.0.** Run the suite and the clean install on Laravel 12.
-3. **Clean install not yet executed.** The procedure exists; Phase 4.0B runs it.
-4. **Supported database minimums undecided.** Decide MySQL 8 and the PostgreSQL floor, and verify what is claimed.
+None open after Phase 4.0B.
+
+| Phase 4.0A blocker | Resolution in Phase 4.0B |
+| --- | --- |
+| PHP 8.2 runtime unverified | The full suite, a clean install, and the concurrency and production tests on PostgreSQL, all on PHP 8.2.33. |
+| Laravel 12 not re-run | The full suite on 12.69.3 (PHP 8.2 and 8.4) and on 12.69.0; clean installs. |
+| Clean install not executed | Laravel 12 and 13 applications installed from the archive (*Clean install*). |
+| Database minimums undecided | Full-suite verified on MySQL 9.6.0 and PostgreSQL 18.4; MySQL 8 and PostgreSQL 15 documented as not runtime-verified. |
+
+If v1.0 must promise MySQL 8 or PostgreSQL 15, running the suite there is the one remaining step before that promise can be made.

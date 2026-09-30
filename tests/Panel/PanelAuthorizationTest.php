@@ -162,8 +162,13 @@ final class PanelAuthorizationTest extends PanelTestCase
         $this->assertSame(1, PayoutBatch::query()->count());
     }
 
+    /**
+     * A visit asking for JSON, which Laravel 12 and 13 alike answer 401 when
+     * unauthenticated; a page load is redirected to the application's `login`
+     * route on 12 (the harness has none) and answered 401 on 13.
+     */
     private function inertia(string $uri): TestResponse
     {
-        return $this->withHeaders(['X-Inertia' => 'true'])->get($uri);
+        return $this->withHeaders(['X-Inertia' => 'true', 'Accept' => 'application/json'])->get($uri);
     }
 }

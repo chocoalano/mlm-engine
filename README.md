@@ -11,7 +11,18 @@ A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-
 - Panda Panel (`chocoalano/panel`) ^0.5.7
 - SQLite, MySQL or PostgreSQL
 
-Verified so far: PHP 8.4, Laravel 13, Panda Panel 0.5.7 and 0.5.8, SQLite 3.53, MySQL 9.6 and PostgreSQL 18. PHP 8.2 and Laravel 12 are declared but not yet re-verified for this release — see [docs/production-readiness.md](docs/production-readiness.md).
+What has actually run, as distinct from what is declared:
+
+| | Full suite verified | Also checked | Not executed |
+| --- | --- | --- | --- |
+| PHP | 8.2, 8.4 | clean installs on both | 8.3, 8.5 |
+| Laravel | 12 (12.69), 13 (13.30 and 13.33) | clean installs on both | releases Composer refuses for security advisories |
+| Panda Panel | 0.5.7, 0.5.8 | clean installs on both | — |
+| MySQL | 9.6.0 | — | 8.x |
+| PostgreSQL | 18.4 | — | 15 |
+| SQLite | 3.53 | — | — |
+
+MySQL 8 and PostgreSQL 15 are the intended floors but have **not** run the suite: run `composer test:mysql` or `composer test:pgsql` against your server before relying on them. The whole matrix, and how each cell was run, is in [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Installation
 
@@ -1226,8 +1237,9 @@ Deliberately out of scope for this release, not defects:
 - no manual or positive commission adjustments, and no persisted ranks;
 - the Plan Builder edits one group of rule conditions; a rule with nested groups is removed and re-added;
 - the genealogy explorer draws the tree as an indented table, because Panda Panel cannot load a plugin's Vue components;
-- PHP 8.2 and Laravel 12 have not yet been re-verified for this release;
-- the direct sponsor and unilevel strategies look each entry's sponsor line up on its own — linear in the number of entries (see [docs/production-readiness.md](docs/production-readiness.md#performance-sanity));
+- the suite has run on MySQL 9.6 and PostgreSQL 18.4, not on MySQL 8 or PostgreSQL 15;
+- on Laravel 12, a guest opening a panel without a login of its own is redirected to the application's `login` route, so the application needs one (Laravel 13 answers 401);
+- the direct sponsor and unilevel strategies look each entry's sponsor line up on its own — linear in the number of entries — and a calculation run holds its candidates in memory, about 7.5 KB per eligible entry (see [docs/production-readiness.md](docs/production-readiness.md#performance-sanity));
 - the repository has no continuous integration: the suite runs locally.
 
 ## Roadmap
