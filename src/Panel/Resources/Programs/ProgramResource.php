@@ -6,6 +6,7 @@ namespace PandaBear\Mlm\Panel\Resources\Programs;
 
 use Illuminate\Database\Eloquent\Builder;
 use PandaBear\Mlm\Models\CommissionPeriod;
+use PandaBear\Mlm\Models\MatrixNetwork;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
@@ -91,30 +92,37 @@ final class ProgramResource extends MlmResource
             ])
             ->defaultSort('code', SortDirection::Ascending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'settings')
+            ->headerActions([ProgramActions::creation()])
+            ->emptyStateActions([ProgramActions::creation()])
             ->recordActions([ViewAction::make(self::class)]);
     }
 
     public static function infolist(InfolistSchema $schema): InfolistSchema
     {
-        return $schema->schema([
-            Section::make(Display::section('identity'))->columns(2)->schema([
-                TextEntry::make('code')->label(Display::field('code')),
-                TextEntry::make('name')->label(Display::field('name')),
-                TextEntry::make('id')->label(Display::field('id')),
-                DateTimeEntry::make('created_at')->label(Display::field('created_at')),
-                TextEntry::make('members_count')
-                    ->label(Display::field('members_count'))
-                    ->formatUsing(static fn (mixed $value, Program $program): string => (string) $program->members()->count()),
-                TextEntry::make('wallets_count')
-                    ->label(Display::field('wallets_count'))
-                    ->formatUsing(static fn (mixed $value, Program $program): string => (string) $program->wallets()->count()),
-                TextEntry::make('active_plans_count')->label(Display::field('active_plans_count')),
-                TextEntry::make('latest_period_status')
-                    ->label(Display::field('latest_period'))
-                    ->formatUsing(static fn (mixed $status, Program $program): ?string => self::latestPeriod($program))
-                    ->placeholder(Display::none()),
-            ]),
-        ]);
+        return $schema
+            ->actions([ProgramActions::openSystemAccount(), ProgramActions::configureMatrix(), ...ProgramActions::links()])
+            ->schema([
+                Section::make(Display::section('identity'))->columns(2)->schema([
+                    TextEntry::make('code')->label(Display::field('code')),
+                    TextEntry::make('name')->label(Display::field('name')),
+                    TextEntry::make('id')->label(Display::field('id')),
+                    DateTimeEntry::make('created_at')->label(Display::field('created_at')),
+                    TextEntry::make('members_count')
+                        ->label(Display::field('members_count'))
+                        ->formatUsing(static fn (mixed $value, Program $program): string => (string) $program->members()->count()),
+                    TextEntry::make('wallets_count')
+                        ->label(Display::field('wallets_count'))
+                        ->formatUsing(static fn (mixed $value, Program $program): string => (string) $program->wallets()->count()),
+                    TextEntry::make('active_plans_count')->label(Display::field('active_plans_count')),
+                    TextEntry::make('latest_period_status')
+                        ->label(Display::field('latest_period'))
+                        ->formatUsing(static fn (mixed $status, Program $program): ?string => self::latestPeriod($program))
+                        ->placeholder(Display::none()),
+                    TextEntry::make('matrix_width')
+                        ->label(Display::field('matrix_width'))
+                        ->formatUsing(static fn (mixed $value, Program $program): string => (string) (MatrixNetwork::query()->where('program_id', $program->getKey())->value('width') ?? __('mlm::mlm.values.matrix_not_configured'))),
+                ]),
+            ]);
     }
 
     public static function pages(): array

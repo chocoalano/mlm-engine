@@ -77,14 +77,14 @@ final class PanelRegistrationTest extends PanelTestCase
         $groups = $this->navigation();
 
         $this->assertSame([
-            'MLM Overview', 'Programs', 'Members', 'Plans', 'Commission periods', 'Calculation runs',
+            'MLM Overview', 'Programs', 'Members', 'Genealogy explorer', 'Plans', 'Commission periods', 'Calculation runs',
             'Commissions', 'Wallets', 'Payout requests', 'Payout batches',
         ], $groups['Network & Compensation'] ?? null);
 
         $this->app->setLocale('id');
 
         $this->assertSame([
-            'Ringkasan MLM', 'Program', 'Anggota', 'Paket', 'Periode komisi', 'Proses perhitungan',
+            'Ringkasan MLM', 'Program', 'Anggota', 'Penjelajah genealogi', 'Paket', 'Periode komisi', 'Proses perhitungan',
             'Komisi', 'Dompet', 'Permintaan pencairan', 'Batch pencairan',
         ], $this->navigation()['Jaringan & Kompensasi'] ?? null);
     }
@@ -153,10 +153,13 @@ final class PanelRegistrationTest extends PanelTestCase
 
     public function test_the_permission_catalogue_separates_viewing_from_operating_and_the_plugin_publishes_it(): void
     {
-        $this->assertSame([MlmPermission::PERIODS_OPERATE, MlmPermission::PAYOUTS_OPERATE], MlmPermission::operate());
+        $this->assertSame([
+            MlmPermission::PROGRAMS_OPERATE, MlmPermission::MEMBERS_OPERATE, MlmPermission::NETWORK_OPERATE, MlmPermission::PLANS_OPERATE,
+            MlmPermission::PERIODS_OPERATE, MlmPermission::COMMISSIONS_OPERATE, MlmPermission::PAYOUTS_OPERATE,
+        ], MlmPermission::operate());
         $this->assertSame([], array_intersect(MlmPermission::view(), MlmPermission::operate()));
         $this->assertSame(MlmPermission::all(), PandaMlmPlugin::make()->permissions());
-        $this->assertCount(12, array_unique(MlmPermission::all()));
+        $this->assertCount(18, array_unique(MlmPermission::all()));
 
         foreach (MlmPermission::all() as $permission) {
             $this->assertMatchesRegularExpression('/^mlm\.[a-z]+\.(view|operate)$/', $permission);
@@ -199,7 +202,7 @@ final class PanelRegistrationTest extends PanelTestCase
     {
         $source = $this->panelSource();
 
-        foreach (['->update(', '->save(', '->forceFill(', '->delete(', '::create(', 'DB::table(', '->insert(', 'CalculationEngine', 'CommissionStatusWriter', 'CommissionLifecycle'] as $forbidden) {
+        foreach (['->update(', '->save(', '->forceFill(', '->delete(', '::create(', '->create([', 'DB::table(', '->insert(', 'CalculationEngine', 'CommissionStatusWriter', 'SponsorEdge::query()->insert', 'PlacementEdge::query()->insert', 'PayoutBatchItem::query()->delete'] as $forbidden) {
             $this->assertStringNotContainsString($forbidden, $source, "The panel adapter uses [{$forbidden}].");
         }
 

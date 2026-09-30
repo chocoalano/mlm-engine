@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Gate;
  * `Gate::before()` hook, or a permission package whose `can()` answers
  * for them. Which roles hold which capability is the application's choice.
  *
- * `view` capabilities read; `operate` capabilities run lifecycle actions
- * through the domain services, and imply nothing about viewing — an
+ * `view` capabilities read; `operate` capabilities create records and run
+ * lifecycle actions through the domain services. Each operate capability
+ * covers its own area only, and implies nothing about viewing — an
  * application grants both to an operator.
  */
 final class MlmPermission
@@ -24,9 +25,19 @@ final class MlmPermission
 
     public const PROGRAMS_VIEW = 'mlm.programs.view';
 
+    public const PROGRAMS_OPERATE = 'mlm.programs.operate';
+
     public const MEMBERS_VIEW = 'mlm.members.view';
 
+    public const MEMBERS_OPERATE = 'mlm.members.operate';
+
+    public const NETWORK_VIEW = 'mlm.network.view';
+
+    public const NETWORK_OPERATE = 'mlm.network.operate';
+
     public const PLANS_VIEW = 'mlm.plans.view';
+
+    public const PLANS_OPERATE = 'mlm.plans.operate';
 
     public const PERIODS_VIEW = 'mlm.periods.view';
 
@@ -35,6 +46,8 @@ final class MlmPermission
     public const CALCULATIONS_VIEW = 'mlm.calculations.view';
 
     public const COMMISSIONS_VIEW = 'mlm.commissions.view';
+
+    public const COMMISSIONS_OPERATE = 'mlm.commissions.operate';
 
     public const WALLETS_VIEW = 'mlm.wallets.view';
 
@@ -63,6 +76,7 @@ final class MlmPermission
             self::DASHBOARD_VIEW,
             self::PROGRAMS_VIEW,
             self::MEMBERS_VIEW,
+            self::NETWORK_VIEW,
             self::PLANS_VIEW,
             self::PERIODS_VIEW,
             self::CALCULATIONS_VIEW,
@@ -74,14 +88,19 @@ final class MlmPermission
     }
 
     /**
-     * The capabilities that change financial state, through domain services.
+     * The capabilities that change state, through domain services.
      *
      * @return list<string>
      */
     public static function operate(): array
     {
         return [
+            self::PROGRAMS_OPERATE,
+            self::MEMBERS_OPERATE,
+            self::NETWORK_OPERATE,
+            self::PLANS_OPERATE,
             self::PERIODS_OPERATE,
+            self::COMMISSIONS_OPERATE,
             self::PAYOUTS_OPERATE,
         ];
     }

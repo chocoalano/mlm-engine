@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use PandaBear\Mlm\Database\Factories\PlanVersionFactory;
 use PandaBear\Mlm\Exceptions\InvalidPlanVersionTransition;
 use PandaBear\Mlm\Exceptions\PlanVersionNotMutable;
@@ -101,6 +102,21 @@ final class PlanVersion extends MlmModel
     public function components(): HasMany
     {
         return $this->hasMany(PlanComponent::class)->orderBy('position')->orderBy('id');
+    }
+
+    /**
+     * Every rule of every component, in component order then rule order.
+     * Read-only, like the rules themselves.
+     *
+     * @return HasManyThrough<PlanRule, PlanComponent, $this>
+     */
+    public function rules(): HasManyThrough
+    {
+        return $this->hasManyThrough(PlanRule::class, PlanComponent::class)
+            ->orderBy('mlm_plan_components.position')
+            ->orderBy('mlm_plan_components.id')
+            ->orderBy('mlm_plan_rules.position')
+            ->orderBy('mlm_plan_rules.id');
     }
 
     /**

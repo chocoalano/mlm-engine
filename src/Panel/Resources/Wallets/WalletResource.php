@@ -11,6 +11,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaBear\Mlm\Panel\Support\WalletBalanceColumn;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Infolists\Components\DateTimeEntry;
@@ -65,6 +66,7 @@ final class WalletResource extends MlmResource
                 WalletBalanceColumn::make('balance')->label(Display::field('balance')),
                 DateTimeColumn::make('created_at')->label(Display::field('created_at'))->sortable(),
             ])
+            ->filters([ProgramFilter::make()])
             ->defaultSort('created_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'shield')
             ->recordActions([ViewAction::make(self::class)]);

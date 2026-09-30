@@ -9,8 +9,11 @@ use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Planning\PlanDefinitionValidator;
 use PandaPanel\Actions\ViewAction;
+use PandaPanel\Forms\Enums\CodeLanguage;
 use PandaPanel\Infolists\Components\BadgeEntry;
+use PandaPanel\Infolists\Components\CodeEntry;
 use PandaPanel\Infolists\Components\DateTimeEntry;
 use PandaPanel\Infolists\Components\TextEntry;
 use PandaPanel\Infolists\InfolistSchema;
@@ -73,31 +76,42 @@ final class PlanVersionResource extends MlmResource
 
     public static function infolist(InfolistSchema $schema): InfolistSchema
     {
-        return $schema->schema([
-            Section::make(Display::section('identity'))->columns(2)->schema([
-                TextEntry::make('plan.name')->label(Display::field('plan')),
-                TextEntry::make('version')->label(Display::field('version')),
-                BadgeEntry::make('status')
-                    ->label(Display::field('status'))
-                    ->formatUsing(static fn (mixed $status): ?string => Display::status('plan_version', $status))
-                    ->colors(Display::statusColorsByLabel('plan_version')),
-                TextEntry::make('status_help')
-                    ->label(Display::section('status'))
-                    ->formatUsing(static fn (mixed $value, PlanVersion $version): ?string => Display::statusHelp('plan_version', $version->status)),
-                TextEntry::make('components_count')
-                    ->label(Display::field('components_count'))
-                    ->formatUsing(static fn (mixed $value, PlanVersion $version): string => (string) $version->components()->count()),
-                TextEntry::make('id')->label(Display::field('id')),
-            ]),
-            Section::make(Display::section('lifecycle'))->columns(3)->schema([
-                DateTimeEntry::make('created_at')->label(Display::field('created_at')),
-                DateTimeEntry::make('validated_at')->label(Display::field('validated_at'))->placeholder(Display::none()),
-                DateTimeEntry::make('published_at')->label(Display::field('published_at'))->placeholder(Display::none()),
-                DateTimeEntry::make('activated_at')->label(Display::field('activated_at'))->placeholder(Display::none()),
-                DateTimeEntry::make('superseded_at')->label(Display::field('superseded_at'))->placeholder(Display::none()),
-                DateTimeEntry::make('archived_at')->label(Display::field('archived_at'))->placeholder(Display::none()),
-            ]),
-        ]);
+        return $schema
+            ->actions(PlanActions::lifecycle())
+            ->schema([
+                Section::make(Display::section('identity'))->columns(2)->schema([
+                    TextEntry::make('plan.name')->label(Display::field('plan')),
+                    TextEntry::make('version')->label(Display::field('version')),
+                    BadgeEntry::make('status')
+                        ->label(Display::field('status'))
+                        ->formatUsing(static fn (mixed $status): ?string => Display::status('plan_version', $status))
+                        ->colors(Display::statusColorsByLabel('plan_version')),
+                    TextEntry::make('status_help')
+                        ->label(Display::section('status'))
+                        ->formatUsing(static fn (mixed $value, PlanVersion $version): ?string => Display::statusHelp('plan_version', $version->status)),
+                    TextEntry::make('components_count')
+                        ->label(Display::field('components_count'))
+                        ->formatUsing(static fn (mixed $value, PlanVersion $version): string => (string) $version->components()->count()),
+                    TextEntry::make('id')->label(Display::field('id')),
+                ]),
+                Section::make(Display::section('lifecycle'))->columns(3)->schema([
+                    DateTimeEntry::make('created_at')->label(Display::field('created_at')),
+                    DateTimeEntry::make('validated_at')->label(Display::field('validated_at'))->placeholder(Display::none()),
+                    DateTimeEntry::make('published_at')->label(Display::field('published_at'))->placeholder(Display::none()),
+                    DateTimeEntry::make('activated_at')->label(Display::field('activated_at'))->placeholder(Display::none()),
+                    DateTimeEntry::make('superseded_at')->label(Display::field('superseded_at'))->placeholder(Display::none()),
+                    DateTimeEntry::make('archived_at')->label(Display::field('archived_at'))->placeholder(Display::none()),
+                ]),
+                Section::make(Display::section('review'))
+                    ->description(__('mlm::mlm.helpers.review'))
+                    ->schema([
+                        CodeEntry::make('definition')
+                            ->label(Display::field('definition'))
+                            ->language(CodeLanguage::Json)
+                            ->formatUsing(static fn (mixed $value, PlanVersion $version): array => app(PlanDefinitionValidator::class)->definition($version))
+                            ->columnSpanFull(),
+                    ]),
+            ]);
     }
 
     public static function pages(): array
@@ -110,6 +124,6 @@ final class PlanVersionResource extends MlmResource
 
     public static function relationManagers(): array
     {
-        return [PlanVersionComponentsRelation::class];
+        return [PlanVersionComponentsRelation::class, PlanVersionRulesRelation::class];
     }
 }

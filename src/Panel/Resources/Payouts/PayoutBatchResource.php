@@ -9,6 +9,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaBear\Mlm\Payout\PayoutBatchTotals;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Forms\Enums\CalloutTone;
@@ -78,8 +79,11 @@ final class PayoutBatchResource extends MlmResource
                 DateTimeColumn::make('cancelled_at')->label(Display::field('cancelled_at'))->placeholder(Display::none())->visible(false),
             ])
             ->filters([
+                ProgramFilter::make(),
                 SelectFilter::make('status')->label(Display::field('status'))->options(Display::statusOptions('batch')),
             ])
+            ->headerActions([PayoutBatchActions::creation()])
+            ->emptyStateActions([PayoutBatchActions::creation()])
             ->callout(Callout::make(__('mlm::mlm.callouts.batches'))->heading(__('mlm::mlm.callouts.batches_heading'))->tone(CalloutTone::Info))
             ->defaultSort('created_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'link')
@@ -91,7 +95,7 @@ final class PayoutBatchResource extends MlmResource
         $money = static fn (string $total): \Closure => static fn (mixed $value, PayoutBatch $batch): ?string => Display::money(self::totals($batch)->{$total}, $batch->currency);
 
         return $schema
-            ->actions(PayoutBatchActions::all())
+            ->actions([PayoutBatchActions::addRequest(), ...PayoutBatchActions::all()])
             ->schema([
                 Section::make(Display::section('identity'))->columns(2)->schema([
                     TextEntry::make('program.name')->label(Display::field('program')),

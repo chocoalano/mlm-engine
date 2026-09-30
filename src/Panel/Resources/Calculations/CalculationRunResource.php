@@ -11,6 +11,7 @@ use PandaBear\Mlm\Panel\Resources\Periods\CommissionPeriodResource;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaPanel\Actions\Action;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Infolists\Components\DateTimeEntry;
@@ -70,6 +71,7 @@ final class CalculationRunResource extends MlmResource
                 TextColumn::make('idempotency_key')->label(Display::field('idempotency_key'))->searchable()->limit(40),
                 DateTimeColumn::make('created_at')->label(Display::field('created_at'))->sortable(),
             ])
+            ->filters([ProgramFilter::make()])
             ->defaultSort('created_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'search')
             ->recordActions([ViewAction::make(self::class)]);

@@ -15,6 +15,8 @@ final class MlmNavigation
 
     public const MEMBERS = 11;
 
+    public const GENEALOGY = 12;
+
     public const PLANS = 20;
 
     public const PERIODS = 21;

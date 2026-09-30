@@ -200,6 +200,24 @@ final readonly class ClosureTree
     }
 
     /**
+     * How many members `descendants()` would return — counted, not read — so
+     * a caller can bound a read before making it.
+     */
+    public function countDescendants(Member $member, ?int $maxDepth, ?CarbonImmutable $at = null): int
+    {
+        if ($maxDepth !== null && $maxDepth < 1) {
+            throw new InvalidArgumentException("A maximum depth must be 1 or more; {$maxDepth} given.");
+        }
+
+        return $this->paths($member->getConnection())
+            ->where('ancestor_id', $member->getKey())
+            ->where('depth', '>', 0)
+            ->when($maxDepth !== null, static fn (Builder $query): Builder => $query->where('depth', '<=', $maxDepth))
+            ->when($at !== null, static fn (Builder $query): Builder => $query->where('effective_from', '<=', $at))
+            ->count();
+    }
+
+    /**
      * @return Collection<int, array{Member, int}>
      */
     private function relatives(Member $member, string $from, string $to, ?int $maxDepth, ?CarbonImmutable $at): Collection

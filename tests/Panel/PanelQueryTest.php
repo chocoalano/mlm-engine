@@ -24,7 +24,7 @@ final class PanelQueryTest extends PanelTestCase
 
     private const LISTS = [
         'mlm-programs', 'mlm-members', 'mlm-plans', 'mlm-commission-periods', 'mlm-calculation-runs',
-        'mlm-commissions', 'mlm-wallets', 'mlm-payout-requests', 'mlm-payout-batches', 'mlm-overview',
+        'mlm-commissions', 'mlm-wallets', 'mlm-payout-requests', 'mlm-payout-batches', 'mlm-overview', 'mlm-plan-versions',
     ];
 
     public function test_every_list_reads_a_fixed_number_of_queries_however_many_rows_it_shows(): void

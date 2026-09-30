@@ -10,6 +10,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Forms\Enums\CodeLanguage;
 use PandaPanel\Infolists\Components\BadgeEntry;
@@ -90,18 +91,19 @@ final class CommissionResource extends MlmResource
                 DateTimeColumn::make('created_at')->label(Display::field('created_at'))->sortable()->visible(false),
             ])
             ->filters([
+                ProgramFilter::make(),
                 SelectFilter::make('status')->label(Display::field('status'))->options(Display::statusOptions('commission')),
             ])
             ->defaultSort('earned_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'check')
-            ->recordActions([ViewAction::make(self::class)]);
+            ->recordActions([ViewAction::make(self::class), ...CommissionActions::all()]);
     }
 
     public static function infolist(InfolistSchema $schema): InfolistSchema
     {
         $ledger = static fn (): bool => MlmPermission::allows(MlmPermission::LEDGER_VIEW);
 
-        return $schema->schema([
+        return $schema->actions(CommissionActions::all())->schema([
             Section::make(Display::section('identity'))->columns(2)->schema([
                 TextEntry::make('member.member_code')->label(Display::field('member')),
                 TextEntry::make('program.name')->label(Display::field('program')),

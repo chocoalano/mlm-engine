@@ -41,7 +41,7 @@ final class PayoutPanelActionsTest extends PanelTestCase
     public function test_approve_start_and_settle_go_through_the_payout_manager_and_move_money_once(): void
     {
         $this->grantAll();
-        $resolved = $this->spyOn(PayoutManager::class);
+        $resolved = $this->spyOnLocal(PayoutManager::class);
         $request = $this->payoutRequest($this->team['ALICE'], '30', 'payout:1');
         $resolved[PayoutManager::class] = 0;
 
@@ -158,7 +158,7 @@ final class PayoutPanelActionsTest extends PanelTestCase
     public function test_seal_start_and_complete_go_through_the_batch_manager(): void
     {
         $this->grantAll();
-        $resolved = $this->spyOn(PayoutBatchManager::class);
+        $resolved = $this->spyOnLocal(PayoutBatchManager::class);
         $alice = $this->approvedRequest('ALICE', '10', 'payout:1');
         $bob = $this->approvedRequest('BOB', '20', 'payout:2');
         $batch = $this->payoutBatches()->create($this->program, 'IDR', 'batch:1');
@@ -232,7 +232,7 @@ final class PayoutPanelActionsTest extends PanelTestCase
     /**
      * @return ArrayObject<class-string, int>
      */
-    private function spyOn(string $class): ArrayObject
+    private function spyOnLocal(string $class): ArrayObject
     {
         $resolved = new ArrayObject([$class => 0]);
 

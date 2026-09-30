@@ -42,7 +42,7 @@ final class PeriodPanelActionsTest extends PanelTestCase
     public function test_calculate_finalize_and_release_each_go_through_their_period_service(): void
     {
         $this->grantAll();
-        $resolved = $this->spyOn([CommissionPeriodCalculator::class, CommissionPeriodFinalizer::class, CommissionPeriodReleaser::class]);
+        $resolved = $this->spyOnLocal([CommissionPeriodCalculator::class, CommissionPeriodFinalizer::class, CommissionPeriodReleaser::class]);
 
         $this->act('record', 'calculate')->assertRedirect()->assertSessionHas('success', 'Commission period calculated.');
 
@@ -182,7 +182,7 @@ final class PeriodPanelActionsTest extends PanelTestCase
      * @param  list<class-string>  $classes
      * @return \ArrayObject<class-string, int>
      */
-    private function spyOn(array $classes): \ArrayObject
+    private function spyOnLocal(array $classes): \ArrayObject
     {
         $resolved = new \ArrayObject(array_fill_keys($classes, 0));
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PandaBear\Mlm;
 
 use PandaBear\Mlm\Panel\MlmPermission;
+use PandaBear\Mlm\Panel\Pages\GenealogyExplorer;
 use PandaBear\Mlm\Panel\Pages\MlmOverview;
 use PandaBear\Mlm\Panel\Resources\Calculations\CalculationRunResource;
 use PandaBear\Mlm\Panel\Resources\Commissions\CommissionResource;
@@ -52,6 +53,7 @@ final class PandaMlmPlugin implements PanelPlugin
      */
     public const PAGES = [
         MlmOverview::class,
+        GenealogyExplorer::class,
     ];
 
     public static function make(): self

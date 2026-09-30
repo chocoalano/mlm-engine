@@ -10,6 +10,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaBear\Mlm\Period\CommissionPeriodTotals;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Forms\Enums\CalloutTone;
@@ -89,8 +90,11 @@ final class CommissionPeriodResource extends MlmResource
                 TextColumn::make('sourceAccount.currency')->label(Display::field('currency')),
             ])
             ->filters([
+                ProgramFilter::make(),
                 SelectFilter::make('status')->label(Display::field('status'))->options(Display::statusOptions('period')),
             ])
+            ->headerActions([PeriodActions::open()])
+            ->emptyStateActions([PeriodActions::open()])
             ->callout(Callout::make(__('mlm::mlm.callouts.periods'))->heading(__('mlm::mlm.callouts.periods_heading'))->tone(CalloutTone::Info))
             ->defaultSort('from_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'rotate-ccw')

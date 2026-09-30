@@ -16,6 +16,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Infolists\Components\DateTimeEntry;
 use PandaPanel\Infolists\Components\TextEntry;
@@ -89,48 +90,53 @@ final class MemberResource extends MlmResource
                 TextColumn::make('placement_parent_code')->label(Display::field('placement_parent'))->placeholder(Display::none())->queryable(false),
                 NumberColumn::make('wallets_count')->label(Display::field('wallets_count'))->counts('wallets')->queryable(false),
             ])
+            ->filters([ProgramFilter::make('mlm_members.program_id')])
             ->defaultSort('joined_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'user')
+            ->headerActions([MemberActions::creation()])
+            ->emptyStateActions([MemberActions::creation()])
             ->recordActions([ViewAction::make(self::class)]);
     }
 
     public static function infolist(InfolistSchema $schema): InfolistSchema
     {
-        return $schema->schema([
-            Section::make(Display::section('identity'))->columns(2)->schema([
-                TextEntry::make('member_code')->label(Display::field('member_code')),
-                TextEntry::make('program.name')->label(Display::field('program')),
-                TextEntry::make('external_type')->label(Display::field('external_type'))->placeholder(Display::none()),
-                TextEntry::make('external_id')->label(Display::field('external_id'))->placeholder(Display::none()),
-                DateTimeEntry::make('joined_at')->label(Display::field('joined_at')),
-                TextEntry::make('id')->label(Display::field('id')),
-            ]),
-            Section::make(Display::section('network'))
-                ->description(Display::section('network_description'))
-                ->columns(2)
-                ->schema([
-                    TextEntry::make('sponsor')
-                        ->label(Display::field('sponsor'))
-                        ->formatUsing(static fn (mixed $value, Member $member): ?string => app(SponsorGenealogy::class)->directSponsor($member)?->member_code)
-                        ->placeholder(Display::none()),
-                    TextEntry::make('sponsor_direct_count')
-                        ->label(Display::field('sponsor_direct_count'))
-                        ->formatUsing(static fn (mixed $value, Member $member): string => (string) SponsorEdge::query()->where('sponsor_id', $member->getKey())->count()),
-                    TextEntry::make('placement_parent')
-                        ->label(Display::field('placement_parent'))
-                        ->formatUsing(static fn (mixed $value, Member $member): ?string => app(PlacementGenealogy::class)->directParent($member)?->member_code)
-                        ->placeholder(Display::none()),
-                    TextEntry::make('placement_direct_count')
-                        ->label(Display::field('placement_direct_count'))
-                        ->formatUsing(static fn (mixed $value, Member $member): string => (string) PlacementEdge::query()->where('parent_id', $member->getKey())->count()),
-                    TextEntry::make('binary_position')
-                        ->label(Display::field('binary_position'))
-                        ->formatUsing(static fn (mixed $value, Member $member): string => self::binaryPosition($member)),
-                    TextEntry::make('matrix_position')
-                        ->label(Display::field('matrix_position'))
-                        ->formatUsing(static fn (mixed $value, Member $member): string => self::matrixPosition($member)),
+        return $schema
+            ->actions([...MemberActions::networkActions(), ...MemberActions::links()])
+            ->schema([
+                Section::make(Display::section('identity'))->columns(2)->schema([
+                    TextEntry::make('member_code')->label(Display::field('member_code')),
+                    TextEntry::make('program.name')->label(Display::field('program')),
+                    TextEntry::make('external_type')->label(Display::field('external_type'))->placeholder(Display::none()),
+                    TextEntry::make('external_id')->label(Display::field('external_id'))->placeholder(Display::none()),
+                    DateTimeEntry::make('joined_at')->label(Display::field('joined_at')),
+                    TextEntry::make('id')->label(Display::field('id')),
                 ]),
-        ]);
+                Section::make(Display::section('network'))
+                    ->description(__('mlm::mlm.helpers.network_overlay'))
+                    ->columns(2)
+                    ->schema([
+                        TextEntry::make('sponsor')
+                            ->label(Display::field('sponsor'))
+                            ->formatUsing(static fn (mixed $value, Member $member): ?string => app(SponsorGenealogy::class)->directSponsor($member)?->member_code)
+                            ->placeholder(Display::none()),
+                        TextEntry::make('sponsor_direct_count')
+                            ->label(Display::field('sponsor_direct_count'))
+                            ->formatUsing(static fn (mixed $value, Member $member): string => (string) SponsorEdge::query()->where('sponsor_id', $member->getKey())->count()),
+                        TextEntry::make('placement_parent')
+                            ->label(Display::field('placement_parent'))
+                            ->formatUsing(static fn (mixed $value, Member $member): ?string => app(PlacementGenealogy::class)->directParent($member)?->member_code)
+                            ->placeholder(Display::none()),
+                        TextEntry::make('placement_direct_count')
+                            ->label(Display::field('placement_direct_count'))
+                            ->formatUsing(static fn (mixed $value, Member $member): string => (string) PlacementEdge::query()->where('parent_id', $member->getKey())->count()),
+                        TextEntry::make('binary_position')
+                            ->label(Display::field('binary_position'))
+                            ->formatUsing(static fn (mixed $value, Member $member): string => self::binaryPosition($member)),
+                        TextEntry::make('matrix_position')
+                            ->label(Display::field('matrix_position'))
+                            ->formatUsing(static fn (mixed $value, Member $member): string => self::matrixPosition($member)),
+                    ]),
+            ]);
     }
 
     public static function pages(): array

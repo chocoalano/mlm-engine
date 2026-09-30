@@ -40,22 +40,34 @@ php artisan panel:plugins
 
 ## Panda Panel
 
-`PandaMlmPlugin::make()` registers the operational surface on the panel it is installed in, under one sidebar group, **Network & Compensation** (*Jaringan & Kompensasi* in Indonesian). The panel is an adapter (ADR-031): it reads the domain's records and runs lifecycle steps through the domain services — it never writes a record itself, never offers a status field, and never deletes financial history.
+`PandaMlmPlugin::make()` registers the operational surface on the panel it is installed in, under one sidebar group, **Network & Compensation** (*Jaringan & Kompensasi* in Indonesian). The panel is an adapter (ADR-031): every change is one call to a domain service, every choice comes from a registry, an enum or a real record, and nothing is ever written, re-statused or deleted by the panel itself.
 
 | Screen | Offers |
 | --- | --- |
 | MLM Overview | four counts: active programs, commission periods awaiting action, commissions available to post, payout requests awaiting action |
-| Programs | list and detail, with their members, plans and commission periods |
-| Members | list and detail, with the current sponsor, placement, binary and matrix position, and wallets |
-| Plans | list and detail, with versions; each version's components, strategies, parameters and rules, read-only |
-| Commission periods | list and detail with their runs; **Calculate**, **Finalize**, **Release** |
+| Programs | **New program**; detail with members, plans and periods, links to every screen filtered to the program, **Open system account**, **Configure matrix** (width, once) |
+| Members | **New member**; detail with the current network position and wallets; **Assign sponsor**, **Place**, **Place in binary**, **Add binary position**, **Place in matrix**, **Add matrix position**; links to the genealogy explorer, wallets, commissions and payouts |
+| Genealogy explorer | one anchor's sponsor, placement, binary or matrix network, now or as of a moment, up to 5 levels and 500 members |
+| Plans | **New plan**; detail with versions, **New draft version**, **Clone version** |
+| Plan versions | the Plan Builder: overview, components, rules and a review of the whole definition; **Add component**, **Change**, **Remove**, **Add rule** while a draft; **Validate**, **Publish**, **Activate**, **Archive**, **Clone to new draft** |
+| Commission periods | **Open period**; detail with runs and exact totals; **Calculate**, **Finalize**, **Release** |
 | Calculation runs | list and detail: what each belongs to (period, hybrid batch or neither) and its commissions |
-| Commissions | list and detail: status, trace, ledger transaction and adjustments |
+| Commissions | detail with trace, ledger transaction and adjustments; **Mark pending**, **Approve**, **Cancel**, **Post** |
 | Wallets | list and detail: the exact balance read from the ledger, and the ledger postings |
-| Payout requests | list and detail; **Approve**, **Start processing**, **Settle**, **Mark failed**, **Cancel** |
-| Payout batches | list and detail with their requests and exact totals; **Seal**, **Start processing**, **Complete**, **Cancel batch** |
+| Payout requests | **New payout request**; **Approve**, **Start processing**, **Settle**, **Mark failed**, **Cancel** |
+| Payout batches | **New payout batch**; detail with requests and exact totals; **Add request** while open; **Seal**, **Start processing**, **Complete**, **Cancel batch** |
 
-Each action calls one service — `CommissionPeriodCalculator`, `CommissionPeriodFinalizer`, `CommissionPeriodReleaser`, `PayoutManager` or `PayoutBatchManager` — in its own transaction, and a refusal is shown to the operator with the service's reason. Creating programs, members, plans and payout requests, the Plan Builder, genealogy assignment and tree views, and batch composition are not part of this surface yet.
+Each action calls one service — `ProgramManager`, `LedgerAccountManager`, `SponsorGenealogy`, `PlacementGenealogy`, `BinaryPlacementManager`, `MatrixNetworkManager`, `MatrixPlacementManager`, `PlanVersionLifecycle`, `PlanDefinitionEditor`, `PlanDefinitionCloner`, the period services, `CommissionLifecycle`, `CommissionPoster`, `PayoutManager` or `PayoutBatchManager` — in its own transaction, and a refusal is shown to the operator with the service's reason. Nothing moves, removes or deletes a sponsor, placement, position, batch member or financial record, and nothing places a member automatically.
+
+### Plan Builder
+
+A plan starts with no version. **New draft version** adds an empty draft; **Clone version** (or **Clone to new draft** on a version) copies a version's components and rules — never its runs, commissions, periods or network state. While the version is a draft, components are added and changed through `PlanDefinitionEditor`: the driver comes from `PlanComponentDriverRegistry`, a commission strategy from `CommissionStrategyRegistry`, and a built-in strategy shows exactly the parameters its parameter class names (levels as depth and amount rows); any other driver or strategy takes a JSON object, stored as data and never run. Rules are one group of conditions — `all` or `any` — each a metric from `MetricRegistry`, its parameters, one of the language's operators (`!=`, `>`, `>=`, `<`, `<=`, `in`, `not_in`, `between`) and decimal operands; a rule with nested groups is removed and re-added rather than changed. **Validate** runs `PlanDefinitionValidator` through the lifecycle and shows what it refuses; a validated version is never edited again. **Publish** and **Activate** are the lifecycle's own steps — activating supersedes the plan's previous active version in the same step.
+
+### Networks and the genealogy explorer
+
+Sponsor and generic placement are separate networks; binary and matrix are explicit overlays over generic placement. **Place in binary** and **Place in matrix** create the placement and the position together, naming the parent and the side or slot; **Add binary position** and **Add matrix position** give a member's existing placement one. A matrix slot is a whole number up to the program's width, set once with **Configure matrix**. Binary needs no setup.
+
+The explorer is read-only. It counts before it reads and shows the deepest level that stays within 500 members, loading the network through its genealogy reader — `descendants()` now, `descendantsAt()` as of a moment — and the direct links in one more query. It is drawn with the panel's own table: Panda Panel resolves Vue components from the application's tree, not a plugin's, so the hierarchy is carried by order and indentation.
 
 ### Capabilities
 
@@ -65,11 +77,12 @@ Every screen and action asks a capability through Laravel's Gate — never a rol
 use PandaBear\Mlm\Panel\MlmPermission;
 
 MlmPermission::all();     // every capability, for seeding a permission store
-MlmPermission::view();    // mlm.dashboard.view, mlm.programs.view, … mlm.payouts.view
-MlmPermission::operate(); // mlm.periods.operate, mlm.payouts.operate
+MlmPermission::view();    // mlm.dashboard.view, mlm.programs.view, mlm.members.view, mlm.network.view, … mlm.payouts.view
+MlmPermission::operate(); // mlm.programs.operate, mlm.members.operate, mlm.network.operate, mlm.plans.operate,
+                          // mlm.periods.operate, mlm.commissions.operate, mlm.payouts.operate
 ```
 
-`view` capabilities open lists and details (`mlm.ledger.view` adds ledger postings and transaction references); `mlm.periods.operate` and `mlm.payouts.operate` run the lifecycle actions. An operator needs both the view and the operate capability of a screen.
+`view` capabilities open lists, details and the explorer (`mlm.ledger.view` adds ledger postings and transaction references). Each `operate` capability runs its own area's actions and no other: `mlm.network.operate` the network writes and the matrix width, `mlm.plans.operate` the Plan Builder, `mlm.commissions.operate` commission review and posting, and so on. An operator needs both the view and the operate capability of a screen, and every action asks its capability again when it runs.
 
 ### Words and icons
 
@@ -110,6 +123,8 @@ $program = Program::create([
     'name' => 'Main Distributor Program',
 ]);
 ```
+
+`PandaBear\Mlm\Program\ProgramManager` makes the same writes — `create()`, a member's `join()`, a plan's `addPlan()` — and refuses a code or external identity already taken with `ConflictingProgramRecord` instead of a database error. The panel creates through it.
 
 ### Member
 
@@ -1189,7 +1204,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the remaining Panda Panel screens — the Plan Builder, genealogy operations and tree views, program, member and payout request creation, and payout batch composition.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and a plugin-shipped Vue genealogy visualisation.
 
 ## Testing
 

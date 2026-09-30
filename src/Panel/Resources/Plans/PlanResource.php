@@ -11,6 +11,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaBear\Mlm\Planning\PlanVersionStatus;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Infolists\Components\DateTimeEntry;
@@ -76,26 +77,31 @@ final class PlanResource extends MlmResource
                     ->queryable(false),
                 NumberColumn::make('versions_count')->label(Display::field('versions_count'))->counts('versions')->queryable(false),
             ])
+            ->filters([ProgramFilter::make()])
             ->defaultSort('code', SortDirection::Ascending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'copy')
+            ->headerActions([PlanActions::creation()])
+            ->emptyStateActions([PlanActions::creation()])
             ->recordActions([ViewAction::make(self::class)]);
     }
 
     public static function infolist(InfolistSchema $schema): InfolistSchema
     {
-        return $schema->schema([
-            Section::make(Display::section('identity'))->columns(2)->schema([
-                TextEntry::make('program.name')->label(Display::field('program')),
-                TextEntry::make('code')->label(Display::field('code')),
-                TextEntry::make('name')->label(Display::field('name')),
-                TextEntry::make('active_version')
-                    ->label(Display::field('active_version'))
-                    ->formatUsing(static fn (mixed $version): ?string => self::version($version))
-                    ->placeholder(Display::none()),
-                TextEntry::make('id')->label(Display::field('id')),
-                DateTimeEntry::make('created_at')->label(Display::field('created_at')),
-            ]),
-        ]);
+        return $schema
+            ->actions([PlanActions::newDraft(), PlanActions::cloneVersion()])
+            ->schema([
+                Section::make(Display::section('identity'))->columns(2)->schema([
+                    TextEntry::make('program.name')->label(Display::field('program')),
+                    TextEntry::make('code')->label(Display::field('code')),
+                    TextEntry::make('name')->label(Display::field('name')),
+                    TextEntry::make('active_version')
+                        ->label(Display::field('active_version'))
+                        ->formatUsing(static fn (mixed $version): ?string => self::version($version))
+                        ->placeholder(Display::none()),
+                    TextEntry::make('id')->label(Display::field('id')),
+                    DateTimeEntry::make('created_at')->label(Display::field('created_at')),
+                ]),
+            ]);
     }
 
     public static function pages(): array

@@ -10,6 +10,7 @@ use PandaBear\Mlm\Panel\MlmPermission;
 use PandaBear\Mlm\Panel\Support\Display;
 use PandaBear\Mlm\Panel\Support\MlmNavigation;
 use PandaBear\Mlm\Panel\Support\MlmResource;
+use PandaBear\Mlm\Panel\Support\ProgramFilter;
 use PandaPanel\Actions\ViewAction;
 use PandaPanel\Forms\Enums\CalloutTone;
 use PandaPanel\Forms\Layouts\Callout;
@@ -83,8 +84,11 @@ final class PayoutRequestResource extends MlmResource
                 TextColumn::make('batchItem.payout_batch_id')->label(Display::field('batch_membership'))->placeholder(Display::none()),
             ])
             ->filters([
+                ProgramFilter::make(),
                 SelectFilter::make('status')->label(Display::field('status'))->options(Display::statusOptions('payout')),
             ])
+            ->headerActions([PayoutRequestActions::creation()])
+            ->emptyStateActions([PayoutRequestActions::creation()])
             ->callout(Callout::make(__('mlm::mlm.callouts.payouts'))->heading(__('mlm::mlm.callouts.payouts_heading'))->tone(CalloutTone::Warning))
             ->defaultSort('requested_at', SortDirection::Descending)
             ->emptyState(self::emptyHeading(), self::emptyDescription(), 'upload')
