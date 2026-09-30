@@ -1,6 +1,8 @@
 # Production readiness
 
-The evidence behind a Panda MLM release: what is supported, what was verified and how, the invariants the suite holds, and what is still open. Prepared in Phase 4.0A (package hardening) and completed in Phase 4.0B (the compatibility matrix and the release-candidate gate).
+The production release evidence for **Panda MLM v1.0.0** (released 2026-10-01): what is supported, what was verified and how, the invariants the suite holds, and what remains open. Gathered in Phase 4.0A (package hardening) and Phase 4.0B (the compatibility matrix and the release gate), on the code released as v1.0.0; the release commit itself changed documentation only.
+
+v1.0.0 establishes the initial stable public API baseline — the surface listed in [public-api.md](public-api.md). Under Semantic Versioning a breaking change there needs a new major version; classes not listed there are internal and carry no compatibility promise.
 
 ## Supported platforms
 
@@ -15,7 +17,7 @@ Three kinds of evidence, never merged: **full suite** — all 1,936 tests on tha
 | MySQL | — | **9.6.0** | — | **8.x** — no MySQL 8 runtime was available |
 | PostgreSQL | — | **18.4** | — | **15** — no PostgreSQL 15 runtime was available |
 
-**Databases.** Full-suite verified: MySQL 9.6.0 and PostgreSQL 18.4. No older version was compatibility-tested. MySQL 8 and PostgreSQL 15, the intended production floors, are **not runtime-verified**: the inference is the SQL the package runs — JSON columns, `FOR UPDATE` and shared row locks, plain aggregates and column comparisons, and no common table expression, window function, `RETURNING`, upsert or `SKIP LOCKED` — which both support. Run `composer test:mysql` or `composer test:pgsql` against an older server before relying on it. SQLite is for development, tests and lightweight use; its `SUM` overflows past 64 bits, so those exact totals are checked on MySQL and PostgreSQL only (ADR-010).
+**Databases.** The full release gate ran on SQLite 3.53.4, MySQL 9.6.0 and PostgreSQL 18.4. No older version was compatibility-tested. MySQL 8 and PostgreSQL 15 are intended compatibility floors but were **not run** in the v1.0.0 release gate, so they are not runtime-verified: the inference is the SQL the package runs — JSON columns, `FOR UPDATE` and shared row locks, plain aggregates and column comparisons, and no common table expression, window function, `RETURNING`, upsert or `SKIP LOCKED` — which both support. Run `composer test:mysql` or `composer test:pgsql` against an older server before relying on it. SQLite is for development, tests and lightweight use; its `SUM` overflows past 64 bits, so those exact totals are checked on MySQL and PostgreSQL only (ADR-010).
 
 **Lowest installable framework.** `--prefer-lowest` resolves Laravel 12.69.0 and 13.30.0, not 12.0 and 13.0: Composer (2.10.1 here) refuses every earlier release by default because each carries a published security advisory. The package's `^12.0|^13.0` is left as it is — Composer's advisory policy, not Panda MLM, sets that floor.
 
@@ -132,7 +134,7 @@ Each cell is its own install. Every run reports every PHP error level, and Larav
 
 The full suite is 1,936 tests. On SQLite 68 are skipped by design: the 58 real-session concurrency tests, 7 exact totals past 64 bits, the isolation-level test, the query plans and the opt-in performance smoke. The one deprecation source seen is vendor code: in *C — lowest*, the lowest Symfony Translation 7.x and Faker trip PHP 8.4's implicitly-nullable-parameter deprecation 17 times; the current releases of both do not.
 
-The final gate, on cell C with the release candidate's code, each engine once and one after the other:
+The release gate, on cell C with the code released as v1.0.0, each engine once and one after the other:
 
 | Engine | Tests | Assertions | Skipped | Duration |
 | --- | --- | --- | --- | --- |
@@ -186,7 +188,7 @@ Deliberately out of scope for v1, not defects:
 
 ## Release blockers
 
-None open after Phase 4.0B.
+None open at v1.0.0. The v1.0.0 release commit changed documentation only; before it was tagged, the SQLite suite, Pint, `composer validate --strict` and `composer audit` ran once more and the archive was checked again.
 
 | Phase 4.0A blocker | Resolution in Phase 4.0B |
 | --- | --- |
@@ -195,4 +197,4 @@ None open after Phase 4.0B.
 | Clean install not executed | Laravel 12 and 13 applications installed from the archive (*Clean install*). |
 | Database minimums undecided | Full-suite verified on MySQL 9.6.0 and PostgreSQL 18.4; MySQL 8 and PostgreSQL 15 documented as not runtime-verified. |
 
-If v1.0 must promise MySQL 8 or PostgreSQL 15, running the suite there is the one remaining step before that promise can be made.
+v1.0.0 does not promise MySQL 8 or PostgreSQL 15. Running the suite on them is the step before a later release could.

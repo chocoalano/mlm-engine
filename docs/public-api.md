@@ -1,6 +1,6 @@
 # Public API
 
-What an application may build on. Everything listed is resolved from the container (every service here is container-built — `PackageIntegrityTest` resolves each one) and keeps its meaning across minor versions once 1.0 is tagged. Anything not listed, and every class marked `@internal`, is an implementation detail that may change without notice.
+What an application may build on. Everything listed is resolved from the container (every service here is container-built — `PackageIntegrityTest` resolves each one) and is the stable public API baseline established by v1.0.0: under Semantic Versioning it keeps its meaning across minor and patch releases, and a breaking change needs a new major version. Anything not listed, and every class marked `@internal`, is an implementation detail that may change without notice.
 
 ## Package integration
 
