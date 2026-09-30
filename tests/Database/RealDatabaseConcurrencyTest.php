@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Commission\CommissionStatus;
+use PandaBear\Mlm\Exceptions\ConflictingCalculationBatch;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
@@ -33,6 +34,7 @@ use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\PlanComponent;
+use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
@@ -468,6 +470,54 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
         $this->assertCount(1, $this->matrixSlots());
         $this->assertSame(3, DB::table('mlm_genealogy_paths')->where('tree_type', 'matrix')->count());
+    }
+
+    /**
+     * Two identical hybrid requests (ADR-028) serialize on the program's row
+     * to open one batch, then both calculate its components under the same
+     * derived keys: one run per component, the binary state moved once,
+     * and both callers resolve the same completed batch.
+     */
+    public function test_racing_identical_hybrid_requests_make_one_batch_and_one_run_per_component(): void
+    {
+        [$version, $account] = $this->hybridRace();
+        $job = ['op' => 'hybrid', 'version' => $version->id, 'from' => '2026-01-01 00:00:00', 'until' => '2026-02-01 00:00:00', 'key' => 'hybrid:jan', 'account' => $account->id];
+
+        $this->holdRow('mlm_programs', $account->program_id);
+        $first = $this->start($job);
+        $second = $this->start($job);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $shown = json_encode([$a, $b], JSON_THROW_ON_ERROR);
+        $this->assertSame([true, true], [$a['ok'], $b['ok']], $shown);
+        $this->assertSame($a['id'], $b['id'], $shown);
+        $this->assertSame('completed', DB::table('mlm_calculation_batches')->where('id', $a['id'])->value('status'));
+        $this->assertSame([1, 2, 2], [DB::table('mlm_calculation_batches')->count(), DB::table('mlm_calculation_batch_items')->whereNotNull('calculation_run_id')->count(), DB::table('mlm_calculation_runs')->count()]);
+        // The binary pair was made once; the sponsor was paid once.
+        $this->assertSame([1, 2, 2], [DB::table('mlm_binary_pairing_results')->count(), DB::table('mlm_binary_pairing_allocations')->count(), DB::table('mlm_commissions')->count()]);
+    }
+
+    /**
+     * Two hybrid requests under one key but for different ranges: one opens
+     * the batch, the other is refused and calculates nothing.
+     */
+    public function test_racing_conflicting_hybrid_requests_under_one_key_open_one_batch(): void
+    {
+        [$version, $account] = $this->hybridRace();
+        $job = ['op' => 'hybrid', 'version' => $version->id, 'from' => '2026-01-01 00:00:00', 'key' => 'hybrid:jan', 'account' => $account->id];
+
+        $this->holdRow('mlm_programs', $account->program_id);
+        $first = $this->start([...$job, 'until' => '2026-02-01 00:00:00']);
+        $second = $this->start([...$job, 'until' => '2026-03-01 00:00:00']);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused([$this->finish($first), $this->finish($second)], ConflictingCalculationBatch::class, 'differs in until');
+        $this->assertSame([1, 2, 1], [DB::table('mlm_calculation_batches')->count(), DB::table('mlm_calculation_runs')->count(), DB::table('mlm_binary_pairing_results')->count()]);
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -1340,6 +1390,33 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
     private function calculateJob(PlanComponent $component, string $until): array
     {
         return ['op' => 'calculate', 'component' => $component->id, 'from' => '2026-06-01 00:00:00', 'until' => $until, 'key' => 'run:2026-06'];
+    }
+
+    /**
+     * A validated plan version composing binary pairing — P with L left and
+     * R right, 100 each — and unilevel — S sponsoring L — and the source
+     * account both are funded from.
+     *
+     * @return array{PlanVersion, LedgerAccount}
+     */
+    private function hybridRace(): array
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'P', 'L', 'R', 'S');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->binary()->place($members['L'], $members['P'], BinarySide::Left);
+        $this->binary()->place($members['R'], $members['P'], BinarySide::Right);
+        $this->genealogy()->assignSponsor($members['L'], $members['S']);
+        $this->travelBack();
+        $this->sale($members['L'], '100', '2026-01-10', 'l1');
+        $this->sale($members['R'], '100', '2026-01-10', 'r1');
+        $account = $this->systemAccounts()->openSystemAccount($plan->program, 'IDR', 'commission.payable');
+        $draft = $this->draft($plan);
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'binary.pairing.fixed', 'parameters' => ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10']]), 'binary');
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'unilevel.fixed', 'parameters' => $this->unilevelParameters(['levels' => [['depth' => 1, 'amount' => '3']]])]), 'unilevel');
+        $this->lifecycle()->markValidated($draft);
+
+        return [PlanVersion::query()->findOrFail($draft->id), $account];
     }
 
     /**

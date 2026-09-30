@@ -29,6 +29,7 @@ use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionPoster;
 use PandaBear\Mlm\Commission\CommissionStrategyRegistry;
+use PandaBear\Mlm\Commission\HybridCalculationEngine;
 use PandaBear\Mlm\Finance\LedgerPostingInput;
 use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Finance\PostLedgerTransaction;
@@ -188,6 +189,11 @@ try {
 
             return $calculate($job);
         })(),
+        'hybrid' => app(HybridCalculationEngine::class)->calculate(
+            PlanVersion::findOrFail($job['version']),
+            new CalculationContext(CarbonImmutable::parse($job['from']), CarbonImmutable::parse($job['until']), $job['key']),
+            LedgerAccount::findOrFail($job['account']),
+        )->batch->getKey(),
         'clawback' => (string) app(CommissionAdjustmentEngine::class)->processVolumeReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'binary_clawback' => (string) app(CommissionAdjustmentEngine::class)->processBinaryReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'commission_post' => app(CommissionPoster::class)->post(Commission::findOrFail($job['commission']))->getKey(),

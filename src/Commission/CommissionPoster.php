@@ -6,6 +6,8 @@ namespace PandaBear\Mlm\Commission;
 
 use DateTimeInterface;
 use Illuminate\Database\Connection;
+use PandaBear\Mlm\Calculation\CalculationBatchStatus;
+use PandaBear\Mlm\Exceptions\IncompleteCalculationBatch;
 use PandaBear\Mlm\Exceptions\InvalidCommissionAdjustment;
 use PandaBear\Mlm\Exceptions\InvalidCommissionPosting;
 use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
@@ -31,8 +33,11 @@ use PandaBear\Mlm\Models\Program;
  * commission whose binary pairing a reversal has partly undone is not
  * posted until that correction's financial share is recorded
  * (`UnresolvedBinaryCorrection`), and one with nothing left to post is not
- * posted at all. `reverse()` undoes a POSTED one with the ledger's reversal
- * — exactly what was posted — at a moment the caller gives.
+ * posted at all. Nor is a commission of a hybrid batch still open
+ * (`IncompleteCalculationBatch`, ADR-028): none of a batch's money moves
+ * before every component is calculated. `reverse()` undoes a POSTED one
+ * with the ledger's reversal — exactly what was posted — at a moment the
+ * caller gives.
  *
  * Each is one transaction with the status change: the commission row is
  * locked, the ledger written through `LedgerRecorder`, and the status moved,
@@ -54,6 +59,7 @@ final readonly class CommissionPoster
 
     /**
      * @throws InvalidCommissionTransition unless the commission is APPROVED, or already POSTED
+     * @throws IncompleteCalculationBatch while the hybrid batch its run belongs to is open
      * @throws UnresolvedBinaryCorrection while a binary correction of it has no financial adjustment
      * @throws InvalidCommissionPosting for a POSTED commission whose ledger transaction does not match it, or an APPROVED one with nothing left to post
      * @throws InvalidCommissionAdjustment when its stored adjustments leave it out of range
@@ -75,6 +81,7 @@ final readonly class CommissionPoster
                 throw InvalidCommissionTransition::from($current, CommissionStatus::Posted);
             }
 
+            $this->assertBatchCompleted($db, $current);
             $this->assertNoUnresolvedCorrection($db, $current);
 
             $amount = $this->net->of($current);
@@ -188,6 +195,33 @@ final readonly class CommissionPoster
     public static function reversalKey(Commission $commission): string
     {
         return 'commission.reverse.'.$commission->getKey();
+    }
+
+    /**
+     * Refuses a commission whose run belongs to a hybrid batch still open.
+     * The run is the batch's once linked to one of its items — or, before
+     * the link is written, once calculated under an item's key: a run a
+     * crash left unlinked is the batch's all the same.
+     */
+    private function assertBatchCompleted(Connection $db, Commission $commission): void
+    {
+        $run = $db->table('mlm_calculation_runs')->where('id', $commission->calculation_run_id)->first(['id', 'program_id', 'plan_component_id', 'idempotency_key']);
+
+        if ($run === null) {
+            return;
+        }
+
+        $open = $db->table('mlm_calculation_batch_items as items')
+            ->join('mlm_calculation_batches as batches', 'batches.id', '=', 'items.calculation_batch_id')
+            ->where('items.plan_component_id', $run->plan_component_id)
+            ->where('batches.program_id', $run->program_id)
+            ->where('batches.status', CalculationBatchStatus::Open->value)
+            ->where(static fn ($query) => $query->where('items.calculation_run_id', $run->id)->orWhere('items.child_idempotency_key', $run->idempotency_key))
+            ->value('batches.id');
+
+        if ($open !== null) {
+            throw IncompleteCalculationBatch::beforePosting($commission, (string) $open);
+        }
     }
 
     /**

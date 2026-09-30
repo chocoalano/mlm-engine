@@ -8,6 +8,7 @@ use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use PandaBear\Mlm\Calculation\CalculationEngine;
 use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
 
@@ -37,6 +38,7 @@ use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
  * @property-read LedgerAccount $sourceAccount
  * @property-read Collection<int, Commission> $commissions
  * @property-read Collection<int, BinaryPairingResult> $binaryPairingResults
+ * @property-read CalculationBatchItem|null $batchItem
  */
 final class CalculationRun extends MlmModel
 {
@@ -109,6 +111,17 @@ final class CalculationRun extends MlmModel
     public function binaryPairingResults(): HasMany
     {
         return $this->hasMany(BinaryPairingResult::class)->orderBy('member_id');
+    }
+
+    /**
+     * The hybrid batch item it was calculated for (ADR-028), if any: a run
+     * calculated on its own has none.
+     *
+     * @return HasOne<CalculationBatchItem, $this>
+     */
+    public function batchItem(): HasOne
+    {
+        return $this->hasOne(CalculationBatchItem::class);
     }
 
     protected static function booted(): void

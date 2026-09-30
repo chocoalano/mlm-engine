@@ -8,8 +8,11 @@ use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use PandaBear\Mlm\Binary\BinarySide;
+use PandaBear\Mlm\Calculation\CalculationContext;
 use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
+use PandaBear\Mlm\Commission\CommissionStatus;
+use PandaBear\Mlm\Commission\HybridCalculationEngine;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
@@ -20,6 +23,8 @@ use PandaBear\Mlm\Models\BinaryPairingCursor;
 use PandaBear\Mlm\Models\BinaryPairingRestoration;
 use PandaBear\Mlm\Models\BinaryPairingResult;
 use PandaBear\Mlm\Models\BinaryPlacementPosition;
+use PandaBear\Mlm\Models\CalculationBatch;
+use PandaBear\Mlm\Models\CalculationBatchItem;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\CommissionAdjustment;
@@ -66,9 +71,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class, CalculationBatch::class, CalculationBatchItem::class];
 
     protected function defineEnvironment($app): void
     {
@@ -427,6 +432,29 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame(2, DB::connection('mlm')->table('mlm_commissions')->where('source_id', $sale->id)->count());
         $this->assertSame(2, DB::connection('mlm')->table('mlm_matrix_placement_positions')->count());
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_matrix_networks'));
+    }
+
+    public function test_a_hybrid_batch_is_calculated_and_posted_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'Alice', 'Bob', 'Charlie');
+        $this->sponsorAt($members['Bob'], $members['Alice'], '2026-01-01 00:00:00');
+        $this->sponsorAt($members['Charlie'], $members['Bob'], '2026-01-01 00:00:00');
+        $this->sale($members['Charlie'], '150', '2026-01-10', 'order:ORD-1');
+        $source = $this->systemAccounts()->openSystemAccount($plan->program, 'IDR', 'commission.payable');
+        $draft = $this->draft($plan);
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'direct-sponsor.fixed', 'parameters' => $this->directParameters()]), 'direct');
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'unilevel.fixed', 'parameters' => $this->unilevelParameters()]), 'unilevel');
+        $this->lifecycle()->markValidated($draft);
+
+        // Batches, items, runs and commissions exist only on [mlm].
+        $result = $this->app->make(HybridCalculationEngine::class)->calculate($draft->refresh(), new CalculationContext(CarbonImmutable::parse('2026-01-01'), CarbonImmutable::parse('2026-02-01'), 'hybrid:2026-01'), $source);
+        $posted = $this->poster()->post($this->approved($result->commissions()[0]));
+
+        $this->assertSame(['mlm', 'completed'], [$result->batch->getConnectionName(), $result->batch->status->value]);
+        $this->assertSame([1, 2, 2, 3], [DB::connection('mlm')->table('mlm_calculation_batches')->count(), DB::connection('mlm')->table('mlm_calculation_batch_items')->count(), DB::connection('mlm')->table('mlm_calculation_runs')->count(), DB::connection('mlm')->table('mlm_commissions')->count()]);
+        $this->assertSame(CommissionStatus::Posted, $posted->status);
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_calculation_batches'));
     }
 
     public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void
