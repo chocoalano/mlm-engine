@@ -50,7 +50,9 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs', 'mlm_payout_requests', 'mlm_payout_batches', 'mlm_payout_batch_items'];
+
+    private const PAYOUT_TABLES = ['mlm_payout_requests', 'mlm_payout_batches', 'mlm_payout_batch_items'];
 
     private const PERIOD_TABLES = ['mlm_commission_periods', 'mlm_commission_period_runs'];
 
@@ -315,6 +317,15 @@ final class MigrationTest extends TestCase
             'a period run belongs to its period' => ['mlm_commission_period_runs', 'commission_period_id', 'mlm_commission_periods'],
             'a period run is one plan component' => ['mlm_commission_period_runs', 'plan_component_id', 'mlm_plan_components'],
             'a period run links its calculation run' => ['mlm_commission_period_runs', 'calculation_run_id', 'mlm_calculation_runs'],
+            'a payout request belongs to a program' => ['mlm_payout_requests', 'program_id', 'mlm_programs'],
+            'a payout request belongs to a member' => ['mlm_payout_requests', 'member_id', 'mlm_members'],
+            'a payout request spends a wallet' => ['mlm_payout_requests', 'wallet_id', 'mlm_wallets'],
+            'a payout request settles through a ledger account' => ['mlm_payout_requests', 'settlement_ledger_account_id', 'mlm_ledger_accounts'],
+            'a payout request names its reservation' => ['mlm_payout_requests', 'reservation_ledger_transaction_id', 'mlm_ledger_transactions'],
+            'a payout request names its refund' => ['mlm_payout_requests', 'refund_ledger_transaction_id', 'mlm_ledger_transactions'],
+            'a payout batch belongs to a program' => ['mlm_payout_batches', 'program_id', 'mlm_programs'],
+            'a payout batch item belongs to its batch' => ['mlm_payout_batch_items', 'payout_batch_id', 'mlm_payout_batches'],
+            'a payout batch item is one request' => ['mlm_payout_batch_items', 'payout_request_id', 'mlm_payout_requests'],
             'a pairing cursor belongs to a program' => ['mlm_binary_pairing_cursors', 'program_id', 'mlm_programs'],
             'a pairing cursor belongs to its component' => ['mlm_binary_pairing_cursors', 'plan_component_id', 'mlm_plan_components'],
             'a pairing cursor names its last run' => ['mlm_binary_pairing_cursors', 'last_calculation_run_id', 'mlm_calculation_runs'],
@@ -1044,6 +1055,61 @@ final class MigrationTest extends TestCase
         $this->assertSame(array_diff_key($rows, ['mlm_commissions' => 1]), array_diff_key($this->rowsOf($tables), ['mlm_commissions' => 1]));
 
         $this->artisan('migrate:rollback', ['--path' => $periods, '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame($rows, $this->rowsOf($tables));
+    }
+
+    public function test_the_payout_tables_have_exactly_their_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing([
+            'id', 'program_id', 'member_id', 'wallet_id', 'settlement_ledger_account_id', 'currency', 'amount_millionths', 'destination_type', 'destination_reference',
+            'idempotency_key', 'status', 'requested_at', 'approved_at', 'processing_at', 'settled_at', 'failed_at', 'cancelled_at', 'settlement_reference', 'failure_reason',
+            'reservation_ledger_transaction_id', 'refund_ledger_transaction_id', 'created_at', 'updated_at',
+        ], Schema::getColumnListing('mlm_payout_requests'));
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'currency', 'idempotency_key', 'status', 'sealed_at', 'processing_at', 'completed_at', 'cancelled_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_payout_batches'),
+        );
+        $this->assertEqualsCanonicalizing(['id', 'payout_batch_id', 'payout_request_id', 'position', 'created_at', 'updated_at'], Schema::getColumnListing('mlm_payout_batch_items'));
+        $this->assertEqualsCanonicalizing(
+            [['program_id', 'idempotency_key'], ['program_id', 'settlement_reference'], ['reservation_ledger_transaction_id'], ['refund_ledger_transaction_id']],
+            $this->uniqueIndexColumns('mlm_payout_requests'),
+        );
+        $this->assertSame([['program_id', 'idempotency_key']], $this->uniqueIndexColumns('mlm_payout_batches'));
+        $this->assertEqualsCanonicalizing([['payout_request_id'], ['payout_batch_id', 'position']], $this->uniqueIndexColumns('mlm_payout_batch_items'));
+        // No balance is stored anywhere: the ledger is the balance.
+        $this->assertSame([], array_values(array_filter(Schema::getColumnListing('mlm_wallets'), static fn (string $column): bool => str_contains($column, 'balance'))));
+    }
+
+    public function test_a_database_at_000037_gains_empty_payout_tables_and_can_lose_them_again(): void
+    {
+        // Runs, a posted commission, binary state, wallets and the ledger as
+        // 000037 left them; then the payout migrations are undone, and done
+        // again.
+        $this->artisan('migrate')->assertSuccessful();
+        $this->pairingRun();
+        $this->app->make(CommissionPoster::class)->post($this->app->make(CommissionLifecycle::class)->approve($this->app->make(CommissionLifecycle::class)->markPending(Commission::query()->sole())));
+        $payouts = $this->migrations('000038', '000040');
+        $this->artisan('migrate:rollback', ['--path' => $payouts, '--realpath' => true])->assertSuccessful();
+
+        $this->assertFalse(Schema::hasTable('mlm_payout_requests'));
+        $tables = $this->existingTables();
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate', ['--path' => $payouts, '--realpath' => true])->assertSuccessful();
+
+        // No payout history is inferred.
+        foreach (self::PAYOUT_TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+
+        $this->assertSame($rows, $this->rowsOf($tables));
+
+        $this->artisan('migrate:rollback', ['--path' => $payouts, '--realpath' => true])->assertSuccessful();
 
         $this->assertSame($schema, $this->schemaOf());
         $this->assertSame($rows, $this->rowsOf($tables));

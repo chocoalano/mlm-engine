@@ -45,12 +45,17 @@ use PandaBear\Mlm\Models\CommissionPeriod;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PayoutBatch;
+use PandaBear\Mlm\Models\PayoutRequest;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\PlanComponent;
 use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Models\Wallet;
 use PandaBear\Mlm\PandaMlmServiceProvider;
+use PandaBear\Mlm\Payout\PayoutBatchManager;
+use PandaBear\Mlm\Payout\PayoutManager;
 use PandaBear\Mlm\Period\CommissionPeriodCalculator;
 use PandaBear\Mlm\Period\CommissionPeriodFinalizer;
 use PandaBear\Mlm\Period\CommissionPeriodManager;
@@ -211,6 +216,22 @@ try {
         'period_calculate' => app(CommissionPeriodCalculator::class)->calculate(CommissionPeriod::findOrFail($job['period']))->period->getKey(),
         'period_finalize' => app(CommissionPeriodFinalizer::class)->finalize(CommissionPeriod::findOrFail($job['period']))->getKey(),
         'period_release' => app(CommissionPeriodReleaser::class)->release(CommissionPeriod::findOrFail($job['period']), CarbonImmutable::parse($job['at']))->getKey(),
+        'payout_request' => app(PayoutManager::class)->request(
+            Member::findOrFail($job['member']),
+            Wallet::findOrFail($job['wallet']),
+            LedgerAccount::findOrFail($job['account']),
+            $job['amount'],
+            'bank-account',
+            'dest:1',
+            CarbonImmutable::parse('2026-03-01 10:00:00'),
+            $job['key'],
+        )->getKey(),
+        'payout_approve' => app(PayoutManager::class)->approve(PayoutRequest::findOrFail($job['request']), CarbonImmutable::parse('2026-03-02 10:00:00'))->getKey(),
+        'payout_settle' => app(PayoutManager::class)->settle(PayoutRequest::findOrFail($job['request']), 'BANK-1', CarbonImmutable::parse('2026-03-03 10:00:00'))->getKey(),
+        'payout_fail' => app(PayoutManager::class)->fail(PayoutRequest::findOrFail($job['request']), 'provider-rejected', CarbonImmutable::parse('2026-03-03 10:00:00'))->getKey(),
+        'payout_batch_add' => app(PayoutBatchManager::class)->add(PayoutBatch::findOrFail($job['batch']), PayoutRequest::findOrFail($job['request']))->getKey(),
+        'payout_batch_start' => app(PayoutBatchManager::class)->startProcessing(PayoutBatch::findOrFail($job['batch']), CarbonImmutable::parse('2026-03-04 10:00:00'))->getKey(),
+        'payout_batch_complete' => app(PayoutBatchManager::class)->complete(PayoutBatch::findOrFail($job['batch']), CarbonImmutable::parse('2026-03-05 10:00:00'))->getKey(),
         'clawback' => (string) app(CommissionAdjustmentEngine::class)->processVolumeReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'binary_clawback' => (string) app(CommissionAdjustmentEngine::class)->processBinaryReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'commission_post' => app(CommissionPoster::class)->post(Commission::findOrFail($job['commission']))->getKey(),

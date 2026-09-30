@@ -12,8 +12,10 @@ use PandaBear\Mlm\Exceptions\ConflictingCalculationBatch;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
 use PandaBear\Mlm\Exceptions\ConflictingCommissionPeriod;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
+use PandaBear\Mlm\Exceptions\ConflictingPayoutRequest;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\FinalizedCommissionPeriod;
+use PandaBear\Mlm\Exceptions\InsufficientPayoutBalance;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
 use PandaBear\Mlm\Exceptions\InvalidCommissionPeriod;
@@ -21,6 +23,7 @@ use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidMatrixNetwork;
 use PandaBear\Mlm\Exceptions\InvalidMatrixPlacement;
+use PandaBear\Mlm\Exceptions\InvalidPayoutTransition;
 use PandaBear\Mlm\Exceptions\InvalidPlacementAssignment;
 use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Exceptions\InvalidSponsorAssignment;
@@ -49,6 +52,7 @@ use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsFixedCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsGenealogies;
 use PandaBear\Mlm\Tests\Concerns\BuildsLedgers;
+use PandaBear\Mlm\Tests\Concerns\BuildsPayouts;
 use PandaBear\Mlm\Tests\Concerns\BuildsPlanDefinitions;
 use PandaBear\Mlm\Tests\Concerns\RecordsVolume;
 use PandaBear\Mlm\Tests\DatabaseTestCase;
@@ -79,6 +83,7 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
     use BuildsFixedCommissions;
     use BuildsGenealogies;
     use BuildsLedgers;
+    use BuildsPayouts;
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
@@ -652,6 +657,148 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $this->assertSame(['released', '2026-03-01 00:00:00'], [$stored->status, (string) $stored->released_at]);
         $this->assertSame([['available', '2026-03-01 00:00:00']], DB::table('mlm_commissions')->get()->map(static fn (object $row): array => [$row->status, (string) $row->available_at])->unique()->values()->all());
         $this->assertSame(1, DB::table('mlm_commissions')->distinct()->count('held_at'));
+    }
+
+    /**
+     * @return array<string, array{string, ?string}>
+     */
+    public static function payoutRequestRaces(): array
+    {
+        return ['the same facts' => ['70', null], 'other facts' => ['71', ConflictingPayoutRequest::class]];
+    }
+
+    /**
+     * Two payout requests under one key (ADR-030) serialize on the program's
+     * row: the same facts make one request, other facts are refused.
+     */
+    #[DataProvider('payoutRequestRaces')]
+    public function test_racing_payout_requests_under_one_key_record_one(string $secondAmount, ?string $refusal): void
+    {
+        [$member, $wallet, $settlement] = $this->payoutWallet('100');
+        $job = ['op' => 'payout_request', 'member' => $member->id, 'wallet' => $wallet->id, 'account' => $settlement->id, 'key' => 'payout:1'];
+
+        $this->holdRow('mlm_programs', $member->program_id);
+        $first = $this->start([...$job, 'amount' => '70']);
+        $second = $this->start([...$job, 'amount' => $secondAmount]);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+
+        if ($refusal === null) {
+            $this->assertSame([true, true, $results[0]['id']], [$results[0]['ok'], $results[1]['ok'], $results[1]['id']], json_encode($results, JSON_THROW_ON_ERROR));
+        } else {
+            $this->assertOneSucceededOneRefused($results, $refusal, 'differs in amount');
+        }
+
+        $this->assertSame(1, DB::table('mlm_payout_requests')->count());
+    }
+
+    /**
+     * Approvals of one wallet serialize on the wallet's row and read its
+     * balance only then: the same request is reserved once, and two
+     * requests never spend the same funds.
+     */
+    public function test_racing_payout_approvals_never_overspend_the_wallet(): void
+    {
+        [$member] = $this->payoutWallet('100');
+        $same = $this->payoutRequest($member, '70', 'payout:same');
+
+        $this->holdRow('mlm_payout_requests', $same->id);
+        $first = $this->start(['op' => 'payout_approve', 'request' => $same->id]);
+        $second = $this->start(['op' => 'payout_approve', 'request' => $same->id]);
+        $this->awaitWaitingOn(['mlm_payout_requests', 'mlm_payout_requests']);
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertSame([true, true], [$a['ok'], $b['ok']], json_encode([$a, $b], JSON_THROW_ON_ERROR));
+        $this->assertSame(['30', 1], [$this->walletBalance($member), DB::table('mlm_ledger_transactions')->where('type', 'payout-reservation')->count()]);
+
+        // Two more requests of 20 against the 30 left: one fits.
+        $left = [$this->payoutRequest($member, '20', 'payout:a'), $this->payoutRequest($member, '20', 'payout:b')];
+
+        $this->holdRow('mlm_wallets', $same->wallet_id);
+        $first = $this->start(['op' => 'payout_approve', 'request' => $left[0]->id]);
+        $second = $this->start(['op' => 'payout_approve', 'request' => $left[1]->id]);
+        $this->awaitWaitingOn(['mlm_wallets', 'mlm_wallets']);
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused([$this->finish($first), $this->finish($second)], InsufficientPayoutBalance::class, 'holds 10');
+        $this->assertSame(['10', 2], [$this->walletBalance($member), DB::table('mlm_ledger_transactions')->where('type', 'payout-reservation')->count()]);
+    }
+
+    /**
+     * A settlement racing a failure of one processing request: exactly one
+     * wins — settled without a refund, or failed with one.
+     */
+    public function test_a_settlement_racing_a_failure_ends_in_exactly_one_of_them(): void
+    {
+        [$member] = $this->payoutWallet('100');
+        $request = $this->payouts()->startProcessing($this->payouts()->approve($this->payoutRequest($member, '70'), now()), now());
+
+        $this->holdRow('mlm_payout_requests', $request->id);
+        $settle = $this->start(['op' => 'payout_settle', 'request' => $request->id]);
+        $fail = $this->start(['op' => 'payout_fail', 'request' => $request->id]);
+        $this->awaitWaitingOn(['mlm_payout_requests', 'mlm_payout_requests']);
+        $this->openGate();
+
+        $this->assertOneSucceededOneRefused([$this->finish($settle), $this->finish($fail)], InvalidPayoutTransition::class, 'and cannot become');
+
+        $stored = DB::table('mlm_payout_requests')->where('id', $request->id)->sole();
+        $refunds = DB::table('mlm_ledger_transactions')->where('reversal_of_id', $stored->reservation_ledger_transaction_id)->count();
+
+        $this->assertContains([$stored->status, $refunds, $this->walletBalance($member)], [['settled', 0, '30'], ['failed', 1, '100']]);
+        fwrite(STDERR, sprintf("\n[payout race %s] %s\n", ExternalDatabase::selected()?->engine, $stored->status));
+    }
+
+    /**
+     * Additions to one batch serialize on its row: the same request joins
+     * once; two requests take positions 1 and 2. Starting and completing
+     * the batch twice at once take each step once.
+     */
+    public function test_racing_batch_steps_take_each_step_once(): void
+    {
+        [$alice] = $this->payoutWallet('100');
+        $bob = Member::factory()->for($alice->program)->create(['member_code' => 'BOB']);
+        $this->fundedWallet($bob, '100', 'fund:bob');
+        $requests = [$this->payouts()->approve($this->payoutRequest($alice, '10', 'payout:a'), now()), $this->payouts()->approve($this->payoutRequest($bob, '20', 'payout:b'), now())];
+        $batch = $this->payoutBatches()->create($alice->program, 'IDR', 'batch:1');
+
+        foreach ([[$requests[0], $requests[0]], [$requests[0], $requests[1]]] as [$one, $other]) {
+            $this->holdRow('mlm_payout_batches', $batch->id);
+            $first = $this->start(['op' => 'payout_batch_add', 'batch' => $batch->id, 'request' => $one->id]);
+            $second = $this->start(['op' => 'payout_batch_add', 'batch' => $batch->id, 'request' => $other->id]);
+            $this->awaitWaitingOn(['mlm_payout_batches', 'mlm_payout_batches']);
+            $this->openGate();
+
+            [$a, $b] = [$this->finish($first), $this->finish($second)];
+            $this->assertSame([true, true], [$a['ok'], $b['ok']], json_encode([$a, $b], JSON_THROW_ON_ERROR));
+        }
+
+        $this->assertSame([1, 2], DB::table('mlm_payout_batch_items')->orderBy('position')->pluck('position')->map(static fn (mixed $position): int => (int) $position)->all());
+        $this->payoutBatches()->seal($batch, now());
+
+        foreach (['payout_batch_start', 'payout_batch_complete'] as $op) {
+            if ($op === 'payout_batch_complete') {
+                foreach ($requests as $request) {
+                    $this->payouts()->settle($request, 'BANK-'.$request->id, now());
+                }
+            }
+
+            $this->holdRow('mlm_payout_batches', $batch->id);
+            $first = $this->start(['op' => $op, 'batch' => $batch->id]);
+            $second = $this->start(['op' => $op, 'batch' => $batch->id]);
+            $this->awaitWaitingOn(['mlm_payout_batches', 'mlm_payout_batches']);
+            $this->openGate();
+
+            [$a, $b] = [$this->finish($first), $this->finish($second)];
+            $this->assertSame([true, true], [$a['ok'], $b['ok']], json_encode([$a, $b], JSON_THROW_ON_ERROR));
+        }
+
+        $stored = DB::table('mlm_payout_batches')->sole();
+        $this->assertSame(['completed', '2026-03-04 10:00:00', '2026-03-05 10:00:00'], [$stored->status, (string) $stored->processing_at, (string) $stored->completed_at]);
+        $this->assertSame(['2026-03-04 10:00:00'], DB::table('mlm_payout_requests')->pluck('processing_at')->map(static fn (mixed $at): string => (string) $at)->unique()->values()->all());
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -1551,6 +1698,20 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $this->lifecycle()->markValidated($draft);
 
         return [PlanVersion::query()->findOrFail($draft->id), $account];
+    }
+
+    /**
+     * A member whose IDR wallet holds `$amount`, and its program's
+     * settlement account.
+     *
+     * @return array{Member, Wallet, LedgerAccount}
+     */
+    private function payoutWallet(string $amount): array
+    {
+        $member = Member::factory()->create(['member_code' => 'ALICE']);
+        $wallet = $this->fundedWallet($member, $amount);
+
+        return [$member, $wallet, $this->settlementAccount($member)];
     }
 
     /**

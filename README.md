@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, and commission periods that calculate, close, hold and release a program's commissions before posting, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, cross-component hybrid rules, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, and commission periods that calculate, close, hold and release a program's commissions before posting, and payouts that reserve wallet funds through the ledger at approval, record the provider's settlement, refund failures and group requests into batches, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payout provider integrations, cross-component hybrid rules, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -644,7 +644,7 @@ app(LedgerRecorder::class)->reverse(new ReverseLedgerTransaction(
 - **Exact amounts.** `FinancialAmount` holds six decimal places, never rounds and never accepts a float. One posting holds at most 9,223,372,036,854.775807 either way, so it can always be reversed; a balance has no limit.
 - **Replays are safe.** A request under an idempotency key already used in the program returns the stored transaction if it is identical — postings in any order — and throws `ConflictingLedgerReplay` otherwise. A rejected request writes nothing.
 - Every account is read from the database: it must belong to the transaction's program and hold its currency. A currency is three uppercase letters; the package keeps no currency list.
-- **No payout yet**, and no transfer, withdrawal, pending balance, fee, tax or rounding policy: those are later phases that post through this ledger. Commissions reach wallets through it — see [Commission core](#commission-core).
+- No transfer, pending balance, fee, tax or rounding policy yet: those are later phases that post through this ledger. Commissions reach wallets through it — see [Commission core](#commission-core) — and leave through [payouts](#payout--settlement).
 
 ## Calculation runs
 
@@ -977,7 +977,7 @@ app(CommissionPoster::class)->post($commission);              // AVAILABLE -> PO
 - **Calculating closes the range.** From the moment a period's calculation begins, a new business entry — original or reversal — whose own moment falls in its range is refused with `FinalizedCommissionPeriod`, so no calculated result goes stale. A later reversal of one of its entries, dated after the period, is recorded as ever.
 - **Finalize and release never move money.** Finalizing needs every commission approved or cancelled, and no binary correction left unprocessed; releasing needs the release moment. `CommissionPoster` is still the ledger boundary: a period's commission posts only when AVAILABLE in a released period (`CommissionPeriodNotReleased` otherwise); commissions calculated outside periods still post straight from APPROVED.
 - **Corrections before posting**: a held or available commission is corrected like any unposted one — a partial binary share is recorded and posting pays what is left; a full correction cancels it.
-- `CommissionPeriodTotals::of($period)` gives calculated, adjustment, net and posted totals, exactly. Payouts and a paid status are not implemented.
+- `CommissionPeriodTotals::of($period)` gives calculated, adjustment, net and posted totals, exactly. A commission has no paid status: [payouts](#payout--settlement) spend the wallet, not commissions.
 
 ## Commission core
 
@@ -1001,7 +1001,7 @@ $commission = app(CommissionPoster::class)->reverse($commission, now());   // RE
 - A commission a binary reversal has partly undone is **not posted** until that correction is processed (`UnresolvedBinaryCorrection`), and one with nothing left to post is never posted for zero.
 - **Reversal** reverses that ledger transaction — exactly what was posted — at the moment you give; the original is untouched, and a commission is reversed once. A commission already partly corrected through the ledger is not reversed whole.
 - What was calculated — member, amount, currency, earned-at, trace — never changes, and runs and commissions are read-only through Eloquent.
-- A paid status, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
+- Posted means the ledger credited the wallet; there is no paid status and no batch approval. Paying the wallet out is a [payout](#payout--settlement).
 
 ## Commission adjustments & source reversal clawback
 
@@ -1065,6 +1065,75 @@ $result->adjustments[0]->outcome;     // CommissionAdjustmentOutcome::Adjusted
 - **Posting waits for it.** A commission with a binary correction not yet processed is refused by `CommissionPoster::post()` with `UnresolvedBinaryCorrection`, so a stale binary commission is never paid by accident.
 - The calculation engine never touches the ledger: the financial step is yours to orchestrate and retry.
 
+## Payout & settlement
+
+A payout takes money out of a member's wallet: requested, approved — which reserves the funds through the ledger — processed by your provider, then settled or failed.
+
+```php
+use PandaBear\Mlm\Payout\PayoutManager;
+
+$payouts = app(PayoutManager::class);
+$settlement = app(LedgerAccountManager::class)->openSystemAccount($program, 'IDR', 'payout.settlement');
+
+$request = $payouts->request($member, $wallet, $settlement, '40', 'bank-account', 'dest:8f2c', $requestedAt, idempotencyKey: 'payout:W-1');
+
+$payouts->approve($request, $approvedAt);
+
+// Wallet funds are now reserved: the wallet holds 40 less.
+
+$payouts->startProcessing($request, $processingAt);
+
+// Your provider or host performs the transfer.
+
+$payouts->settle(
+    $request,
+    settlementReference: $providerReference,
+    at: $settledAt,
+);
+```
+
+When the transfer fails instead:
+
+```php
+$payouts->fail(
+    $request,
+    reason: 'provider-rejected',
+    at: $failedAt,
+);
+```
+
+- **Status**: `REQUESTED → APPROVED → PROCESSING → SETTLED`, `REQUESTED → CANCELLED`, and `APPROVED` or `PROCESSING → FAILED`. Each step once, at the moment you give; repeating a step with the same facts returns the request.
+- **The wallet is the source of truth.** Approval reads the wallet's ledger balance under the wallet's lock and refuses more than it holds (`InsufficientPayoutBalance`), so two payouts never spend the same funds; what is left stays in the wallet. Payouts never read commissions, periods, runs or the genealogy, and a commission has no paid status.
+- **Approval moves the money once**: one ledger transaction debiting the wallet and crediting your program's settlement **system account** of the same currency. Settlement records the provider's reference — unique in the program — and moves nothing more.
+- **Failure restores the reserved funds to the wallet** by reversing that transaction. Cancelling, before approval, moves nothing.
+- The destination is opaque — a type and a reference your host resolves. Never store credentials in it.
+- A commission clawed back after its funds were paid out leaves the payout as it was: the wallet may go negative.
+
+Group approved requests of one program and currency into a batch:
+
+```php
+use PandaBear\Mlm\Payout\PayoutBatchManager;
+use PandaBear\Mlm\Payout\PayoutBatchTotals;
+
+$batches = app(PayoutBatchManager::class);
+
+$batch = $batches->create($program, 'IDR', idempotencyKey: 'batch:2026-03-01');
+$batches->add($batch, $approvedRequest);         // approved requests only, one batch each
+$batches->add($batch, $otherApprovedRequest);
+$batches->seal($batch, $sealedAt);
+$batches->startProcessing($batch, $processingAt); // every request moves to PROCESSING together
+
+$payouts->settle($approvedRequest, settlementReference: 'BANK-123', at: $settledAt);
+$payouts->fail($otherApprovedRequest, reason: 'account-closed', at: $failedAt);
+
+$batches->complete($batch, $completedAt);         // once no request is still processing
+
+PayoutBatchTotals::of($batch);                    // counts; requested, reserved, settled and failed totals
+```
+
+- **A batch groups; it never moves money.** Every movement is its requests' own reservation or refund. `OPEN → SEALED → PROCESSING → COMPLETED`, or `OPEN → CANCELLED`; a batched request is processed with its batch, then settles or fails on its own.
+- Provider integrations, webhooks, bank exports, fees, taxes, thresholds, scheduled payouts and currency conversion are not implemented.
+
 ## Configuration
 
 `config/mlm.php` holds **technical** settings only — where the package stores, queues and caches. Business plan rules such as pairing ratios, matrix sizes, commission percentages and rank requirements will never live in this file; they belong to versioned plans in the database.
@@ -1083,7 +1152,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

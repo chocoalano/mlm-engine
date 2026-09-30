@@ -37,6 +37,9 @@ use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\MatrixNetwork;
 use PandaBear\Mlm\Models\MatrixPlacementPosition;
 use PandaBear\Mlm\Models\Member;
+use PandaBear\Mlm\Models\PayoutBatch;
+use PandaBear\Mlm\Models\PayoutBatchItem;
+use PandaBear\Mlm\Models\PayoutRequest;
 use PandaBear\Mlm\Models\PlacementEdge;
 use PandaBear\Mlm\Models\Plan;
 use PandaBear\Mlm\Models\PlanComponent;
@@ -46,6 +49,9 @@ use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
+use PandaBear\Mlm\Payout\PayoutBatchManager;
+use PandaBear\Mlm\Payout\PayoutBatchTotals;
+use PandaBear\Mlm\Payout\PayoutManager;
 use PandaBear\Mlm\Period\CommissionPeriodCalculator;
 use PandaBear\Mlm\Period\CommissionPeriodFinalizer;
 use PandaBear\Mlm\Period\CommissionPeriodManager;
@@ -79,9 +85,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs', 'mlm_payout_requests', 'mlm_payout_batches', 'mlm_payout_batch_items'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class, CalculationBatch::class, CalculationBatchItem::class, CommissionPeriod::class, CommissionPeriodRun::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class, CalculationBatch::class, CalculationBatchItem::class, CommissionPeriod::class, CommissionPeriodRun::class, PayoutRequest::class, PayoutBatch::class, PayoutBatchItem::class];
 
     protected function defineEnvironment($app): void
     {
@@ -493,6 +499,33 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
 
         $this->expectException(FinalizedCommissionPeriod::class);
         $this->sale($members['Bob'], '1', '2026-01-20', 'order:late');
+    }
+
+    public function test_payouts_and_their_batches_run_their_whole_life_on_the_configured_connection(): void
+    {
+        $member = Member::factory()->create(['member_code' => 'Alice']);
+        $account = LedgerAccount::query()->where('wallet_id', $this->wallets()->open($member, 'IDR')->id)->sole();
+        $clearing = $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'adjustment.clearing');
+        $settlement = $this->systemAccounts()->openSystemAccount($member->program, 'IDR', 'payout.settlement');
+        $this->ledger()->post($this->postCommand($member->program, [[$clearing, '-100'], [$account, '100']]));
+        $payouts = $this->app->make(PayoutManager::class);
+        $batches = $this->app->make(PayoutBatchManager::class);
+
+        // Requests, reservations, batches and refunds read and write [mlm].
+        $settled = $payouts->approve($payouts->request($member, Wallet::query()->sole(), $settlement, '60', 'bank-account', 'dest:1', now(), 'payout:1'), now());
+        $failed = $payouts->approve($payouts->request($member, Wallet::query()->sole(), $settlement, '40', 'bank-account', 'dest:1', now(), 'payout:2'), now());
+        $batch = $batches->create($member->program, 'IDR', 'batch:1');
+        $batches->add($batch, $settled);
+        $batches->add($batch, $failed);
+        $batches->startProcessing($batches->seal($batch, now()), now());
+        $payouts->settle($settled, 'BANK-1', now());
+        $payouts->fail($failed, 'account-closed', now());
+        $completed = $batches->complete($batch, now());
+
+        $this->assertSame(['mlm', 'completed', '40'], [$completed->getConnectionName(), $completed->status->value, $this->balances()->forWallet(Wallet::query()->sole())->value()]);
+        $this->assertSame([2, 1, 2], [DB::connection('mlm')->table('mlm_payout_requests')->count(), DB::connection('mlm')->table('mlm_payout_batches')->count(), DB::connection('mlm')->table('mlm_payout_batch_items')->count()]);
+        $this->assertSame('60', PayoutBatchTotals::of($completed)->settled->value());
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_payout_requests'));
     }
 
     public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void
