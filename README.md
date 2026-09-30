@@ -2,23 +2,36 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, and commission periods that calculate, close, hold and release a program's commissions before posting, and payouts that reserve wallet funds through the ledger at approval, record the provider's settlement, refund failures and group requests into batches, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payout provider integrations, cross-component hybrid rules, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, and commission periods that calculate, close, hold and release a program's commissions before posting, and payouts that reserve wallet funds through the ledger at approval, record the provider's settlement, refund failures and group requests into batches, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. The Panda Panel plugin gives operators the whole surface: programs, members and networks, the Plan Builder, a genealogy explorer, periods, commissions, the ledger and payouts. Until 1.0 the API may still change between minor versions; the supported surface is listed in [docs/public-api.md](docs/public-api.md), and what is verified — and what still blocks 1.0 — in [docs/production-readiness.md](docs/production-readiness.md). See [Known limitations](#known-limitations) for what is deliberately out of scope.
 
 ## Requirements
 
 - PHP ^8.2
 - Laravel 12 or 13
 - Panda Panel (`chocoalano/panel`) ^0.5.7
+- SQLite, MySQL or PostgreSQL
+
+Verified so far: PHP 8.4, Laravel 13, Panda Panel 0.5.7 and 0.5.8, SQLite 3.53, MySQL 9.6 and PostgreSQL 18. PHP 8.2 and Laravel 12 are declared but not yet re-verified for this release — see [docs/production-readiness.md](docs/production-readiness.md).
 
 ## Installation
 
 Install the package with Composer:
 
 ```bash
-composer require pandabear/mlm:^0.1
+composer require pandabear/mlm
 ```
 
-Laravel's package discovery registers `PandaBear\Mlm\PandaMlmServiceProvider` automatically.
+The latest tagged release, v0.1.0, holds the foundation only (programs, members, plans, genealogy, volume); everything else described here is on `main` until 1.0 is tagged — see [CHANGELOG.md](CHANGELOG.md).
+
+Laravel's package discovery registers `PandaBear\Mlm\PandaMlmServiceProvider` automatically. Then create the tables:
+
+```bash
+php artisan migrate
+```
+
+### Upgrading
+
+Run `php artisan migrate`. Migrations only add tables and columns; an installation from v0.1.0 keeps its data, and nothing is backfilled into new tables. Once financial data exists, do not roll migrations back: restore a backup or fix forward with a new migration.
 
 ## Panel registration
 
@@ -1202,6 +1215,21 @@ Configure it through the environment variables above. The config file is not pub
 
 Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmConfig`, resolved from the container, rather than through `config()`.
 
+## Known limitations
+
+Deliberately out of scope for this release, not defects:
+
+- no payment provider, bank or webhook integration — a payout records the provider's settlement reference;
+- no tax, fees, KYC or AML;
+- no automatic scheduling — periods, calculations and payouts run when an operator or the application asks;
+- no automatic placement or matrix spillover, one matrix network per program, and no moving or removing a sponsor, placement or position;
+- no manual or positive commission adjustments, and no persisted ranks;
+- the Plan Builder edits one group of rule conditions; a rule with nested groups is removed and re-added;
+- the genealogy explorer draws the tree as an indented table, because Panda Panel cannot load a plugin's Vue components;
+- PHP 8.2 and Laravel 12 have not yet been re-verified for this release;
+- the direct sponsor and unilevel strategies look each entry's sponsor line up on its own — linear in the number of entries (see [docs/production-readiness.md](docs/production-readiness.md#performance-sanity));
+- the repository has no continuous integration: the suite runs locally.
+
 ## Roadmap
 
 Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and a plugin-shipped Vue genealogy visualisation.
@@ -1245,6 +1273,13 @@ Tests in the `concurrency` group run package operations in separate PHP processe
 composer test:mysql -- --group concurrency
 ```
 
+## Documentation
+
+- [docs/public-api.md](docs/public-api.md) — the supported API
+- [docs/production-readiness.md](docs/production-readiness.md) — verification, invariants, concurrency, migrations and open blockers
+- [CHANGELOG.md](CHANGELOG.md)
+- [docs/adr/](docs/adr/) — the architecture decisions
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

@@ -70,6 +70,19 @@ final class AuthorizationMatrixTest extends PanelTestCase
     }
 
     /**
+     * Panda Panel wraps an action in a database transaction unless told not
+     * to. Every service here owns its transaction — and the period
+     * calculator refuses to run inside a caller's — so every action that
+     * changes state opts out.
+     */
+    public function test_every_action_leaves_its_transaction_to_its_service(): void
+    {
+        foreach ($this->mutatingActions() as $name => $action) {
+            $this->assertFalse($action->hasDatabaseTransaction(), "[{$name}] runs inside the panel's transaction.");
+        }
+    }
+
+    /**
      * The panel asks the capability before it runs an action, but a handler
      * reached another way asks again itself: run directly, without the
      * capability, each is refused before its service is called.

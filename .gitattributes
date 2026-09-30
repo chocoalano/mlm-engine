@@ -1,0 +1,21 @@
+# Line endings are normalised to LF in the repository.
+* text=auto eol=lf
+
+# Development-only material, left out of the archive Composer installs.
+# Everything a consumer runs — src/, config/, database/, resources/,
+# composer.json, README.md, LICENSE, CHANGELOG.md and docs/ — is kept.
+/.gitattributes export-ignore
+/vendor export-ignore
+.DS_Store export-ignore
+/.gitignore export-ignore
+/.github export-ignore
+/.idea export-ignore
+/.vscode export-ignore
+/.phpunit.cache export-ignore
+/.phpunit.result.cache export-ignore
+/composer.lock export-ignore
+/phpunit.xml export-ignore
+/phpunit.xml.dist export-ignore
+/pint.json export-ignore
+/scripts export-ignore
+/tests export-ignore
