@@ -48,4 +48,43 @@ final class LedgerBalanceReader
 
         return $this->forAccount($account);
     }
+
+    /**
+     * Many wallets' balances, keyed by wallet id — each exactly what
+     * `forWallet()` answers, read as their accounts in one query and their
+     * postings in chunks, never one read per wallet. A wallet without an
+     * account is refused as `forWallet()` refuses it.
+     *
+     * @param  iterable<Wallet>  $wallets
+     * @return array<string, FinancialAmount>
+     */
+    public function forWallets(iterable $wallets): array
+    {
+        $wallets = collect($wallets)->values();
+
+        if ($wallets->isEmpty()) {
+            return [];
+        }
+
+        $connection = $wallets->first()->getConnection();
+        $ids = $wallets->map(static fn (Wallet $wallet): string => (string) $wallet->getKey())->unique()->values()->all();
+        $walletOf = LedgerAccount::on($connection->getName())->whereIn('wallet_id', $ids)->pluck('wallet_id', 'id')->all();
+
+        foreach (array_diff($ids, $walletOf) as $missing) {
+            throw InvalidLedgerAccount::walletWithoutAccount($missing);
+        }
+
+        $balances = array_fill_keys($ids, FinancialAmount::zero());
+
+        $connection->table('mlm_ledger_postings')
+            ->whereIn('ledger_account_id', array_keys($walletOf))
+            ->select(['id', 'ledger_account_id', 'amount_millionths'])
+            ->lazyById(self::CHUNK)
+            ->each(static function (object $posting) use (&$balances, $walletOf): void {
+                $wallet = $walletOf[$posting->ledger_account_id];
+                $balances[$wallet] = $balances[$wallet]->add(FinancialAmount::fromMillionths($posting->amount_millionths));
+            });
+
+        return $balances;
+    }
 }

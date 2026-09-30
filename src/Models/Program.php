@@ -22,6 +22,7 @@ use PandaBear\Mlm\Database\Factories\ProgramFactory;
  * @property-read Collection<int, CalculationRun> $calculationRuns
  * @property-read Collection<int, Commission> $commissions
  * @property-read Collection<int, CommissionAdjustment> $commissionAdjustments
+ * @property-read Collection<int, CommissionPeriod> $commissionPeriods
  */
 final class Program extends MlmModel
 {
@@ -81,6 +82,14 @@ final class Program extends MlmModel
     public function commissionAdjustments(): HasMany
     {
         return $this->hasMany(CommissionAdjustment::class);
+    }
+
+    /**
+     * @return HasMany<CommissionPeriod, $this>
+     */
+    public function commissionPeriods(): HasMany
+    {
+        return $this->hasMany(CommissionPeriod::class);
     }
 
     protected static function newFactory(): ProgramFactory

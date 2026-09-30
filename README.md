@@ -38,6 +38,43 @@ Confirm it is registered:
 php artisan panel:plugins
 ```
 
+## Panda Panel
+
+`PandaMlmPlugin::make()` registers the operational surface on the panel it is installed in, under one sidebar group, **Network & Compensation** (*Jaringan & Kompensasi* in Indonesian). The panel is an adapter (ADR-031): it reads the domain's records and runs lifecycle steps through the domain services — it never writes a record itself, never offers a status field, and never deletes financial history.
+
+| Screen | Offers |
+| --- | --- |
+| MLM Overview | four counts: active programs, commission periods awaiting action, commissions available to post, payout requests awaiting action |
+| Programs | list and detail, with their members, plans and commission periods |
+| Members | list and detail, with the current sponsor, placement, binary and matrix position, and wallets |
+| Plans | list and detail, with versions; each version's components, strategies, parameters and rules, read-only |
+| Commission periods | list and detail with their runs; **Calculate**, **Finalize**, **Release** |
+| Calculation runs | list and detail: what each belongs to (period, hybrid batch or neither) and its commissions |
+| Commissions | list and detail: status, trace, ledger transaction and adjustments |
+| Wallets | list and detail: the exact balance read from the ledger, and the ledger postings |
+| Payout requests | list and detail; **Approve**, **Start processing**, **Settle**, **Mark failed**, **Cancel** |
+| Payout batches | list and detail with their requests and exact totals; **Seal**, **Start processing**, **Complete**, **Cancel batch** |
+
+Each action calls one service — `CommissionPeriodCalculator`, `CommissionPeriodFinalizer`, `CommissionPeriodReleaser`, `PayoutManager` or `PayoutBatchManager` — in its own transaction, and a refusal is shown to the operator with the service's reason. Creating programs, members, plans and payout requests, the Plan Builder, genealogy assignment and tree views, and batch composition are not part of this surface yet.
+
+### Capabilities
+
+Every screen and action asks a capability through Laravel's Gate — never a role. Grant them however the application grants abilities: `Gate::define()`, a `Gate::before()` hook, or a permission package whose `can()` answers for them.
+
+```php
+use PandaBear\Mlm\Panel\MlmPermission;
+
+MlmPermission::all();     // every capability, for seeding a permission store
+MlmPermission::view();    // mlm.dashboard.view, mlm.programs.view, … mlm.payouts.view
+MlmPermission::operate(); // mlm.periods.operate, mlm.payouts.operate
+```
+
+`view` capabilities open lists and details (`mlm.ledger.view` adds ledger postings and transaction references); `mlm.periods.operate` and `mlm.payouts.operate` run the lifecycle actions. An operator needs both the view and the operate capability of a screen.
+
+### Words and icons
+
+The surface speaks English and Indonesian and follows the application's locale; override any sentence under `lang/vendor/mlm/{locale}/mlm.php`. Nothing is published. Its icons are ones Panda Panel itself already declares, so `php artisan panel:icons` — which scans the application and the framework, not plugins — keeps every one of them in the registry.
+
 ## Core domain
 
 ### Database
@@ -1152,7 +1189,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payment provider integrations, webhooks, bank exports and reconciliation, payout thresholds, scheduled payouts and currency conversion, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the remaining Panda Panel screens — the Plan Builder, genealogy operations and tree views, program, member and payout request creation, and payout batch composition.
 
 ## Testing
 

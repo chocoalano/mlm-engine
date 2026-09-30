@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace PandaBear\Mlm\Models;
 
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasManyThrough;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use PandaBear\Mlm\Exceptions\ImmutableFinancialRecord;
 use PandaBear\Mlm\Finance\WalletManager;
@@ -61,6 +62,17 @@ final class Wallet extends MlmModel
     public function account(): HasOne
     {
         return $this->hasOne(LedgerAccount::class);
+    }
+
+    /**
+     * Every posting to the wallet's account — its ledger history. Read-only,
+     * like the postings themselves.
+     *
+     * @return HasManyThrough<LedgerPosting, LedgerAccount, $this>
+     */
+    public function ledgerPostings(): HasManyThrough
+    {
+        return $this->hasManyThrough(LedgerPosting::class, LedgerAccount::class, 'wallet_id', 'ledger_account_id');
     }
 
     protected static function booted(): void

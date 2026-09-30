@@ -96,5 +96,10 @@ final class PandaMlmServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+        // The Panda Panel surface's words, in English and Indonesian. Read
+        // from the package — an application overrides one under
+        // `lang/vendor/mlm` without publishing anything.
+        $this->loadTranslationsFrom(__DIR__.'/../resources/lang', 'mlm');
     }
 }

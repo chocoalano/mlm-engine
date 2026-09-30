@@ -150,6 +150,46 @@ final class LedgerBalanceReaderTest extends DatabaseTestCase
         $this->balances()->forWallet($this->wallet);
     }
 
+    public function test_many_wallets_are_read_at_once_exactly_as_each_is_read_alone(): void
+    {
+        $other = $this->wallets()->open(Member::factory()->for($this->program)->create(), 'IDR');
+        $empty = $this->wallets()->open(Member::factory()->for($this->program)->create(), 'IDR');
+        $this->credit('100.5', 'ADJ-1');
+        $this->credit('-0.000001', 'ADJ-2');
+        $this->postLedger($this->program, [[$this->clearing, '-9223372036854.775807'], [$this->walletAccount($other->member), '9223372036854.775807']], 'adjustment:ADJ-3', 'ADJ-3');
+        $this->postLedger($this->program, [[$this->clearing, '-1'], [$this->walletAccount($other->member), '1']], 'adjustment:ADJ-4', 'ADJ-4');
+
+        $queries = 0;
+        DB::listen(static function () use (&$queries): void {
+            $queries++;
+        });
+
+        $balances = $this->balances()->forWallets([$this->wallet, $other, $empty]);
+        $read = $queries;
+
+        $this->assertSame([$this->wallet->id, $other->id, $empty->id], array_keys($balances));
+        $this->assertSame(['100.499999', '9223372036855.775807', '0'], array_map(static fn ($balance): string => $balance->value(), array_values($balances)));
+
+        foreach ([$this->wallet, $other, $empty] as $wallet) {
+            $this->assertTrue($balances[$wallet->id]->equals($this->balances()->forWallet($wallet)));
+        }
+
+        // Their accounts in one query, their postings in one chunk: never a
+        // read per wallet.
+        $this->assertSame(2, $read);
+        $this->assertSame([], $this->balances()->forWallets([]));
+    }
+
+    public function test_many_wallets_refuse_one_without_its_account(): void
+    {
+        DB::table('mlm_ledger_accounts')->where('wallet_id', $this->wallet->id)->delete();
+
+        $this->expectException(InvalidLedgerAccount::class);
+        $this->expectExceptionMessage("Wallet [{$this->wallet->id}] has no ledger account");
+
+        $this->balances()->forWallets([$this->wallet]);
+    }
+
     private function credit(string $amount, string $source): LedgerTransaction
     {
         return $this->postLedger($this->program, [
