@@ -2,7 +2,7 @@
 
 A configurable MLM engine for [Panda Panel](https://github.com/chocoalano/panda-panel), part of the pandabear.asia ecosystem.
 
-> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, cross-component hybrid rules, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
+> **Status: early development, pre-1.0.** It provides the Panda Panel plugin and its technical configuration; the core domain — programs and their members; plans with versioning, a version lifecycle and versioned definitions — components and rules in a safe rule language, validated before use; qualification — one chosen rule evaluated for a member, with a complete trace; ranks — one chosen rank ladder evaluated for a member, the highest qualifying rank selected and every rank explained; the sponsor and placement genealogies, each readable as it stands or as it stood at any past moment, an explicit binary left/right overlay on placement, and an explicit matrix overlay of numbered slots up to a program's fixed width; an exact, immutable volume history with idempotent recording, explicit reversal and member totals; a financial ledger — member wallets and program system accounts, balanced single-currency transactions, idempotent posting, reversal and exact derived balances; a commission core — registered calculation strategies, audited snapshot-consistent calculation runs, a review lifecycle and posting through the ledger — with built-in direct-sponsor, depth-based, matrix and binary pairing strategies, composed into hybrid calculation batches, and commission periods that calculate, close, hold and release a program's commissions before posting, fixed or proportional with explicit rounding, binary carry kept source by source, clawback of commissions whose source is later reversed, and binary reversal correction — undone pairs, restored carry and the exact financial share of each commission, before or after posting; and metrics — a registry, an engine and the built-in `member.volume`, `sponsor.network.volume`, `placement.network.volume`, `binary.left.volume`, `binary.right.volume` and `matrix.network.volume`, network and leg volume read through the genealogy as it was when each activity happened. The suite runs on SQLite, MySQL and PostgreSQL, including real concurrent database sessions. Until 1.0 the API may still change between minor versions. Manual and positive commission adjustments, rank persistence and promotion, payouts, cross-component hybrid rules, automatic placement and matrix spillover, and the Panda Panel administration screens are **not implemented yet** (see [Roadmap](#roadmap)).
 
 ## Requirements
 
@@ -951,6 +951,34 @@ $result->commissionsOf($result->runs()[0]); // that run's commissions — never 
 - **Commissions stay separate.** Two components paying one member make two commissions, each with its own provenance. Later reversals are corrected by each domain's own engine — `processVolumeReversal()` for source-entry strategies, the binary correction and `processBinaryReversal()` for pairing — never by a hybrid one.
 - Every component must be funded from the one source account given. Cross-component rules — matching, caps, "the greater of" — are not implemented.
 
+## Commission periods
+
+A commission period is a program's calculation, review and release boundary: its **active** plan version, one range [from, until), one source account, and the earliest moment its commissions may become available. A program's periods never overlap.
+
+```php
+use PandaBear\Mlm\Period\CommissionPeriodCalculator;
+use PandaBear\Mlm\Period\CommissionPeriodFinalizer;
+use PandaBear\Mlm\Period\CommissionPeriodManager;
+use PandaBear\Mlm\Period\CommissionPeriodReleaser;
+
+$period = app(CommissionPeriodManager::class)->create($program, $activeVersion, $commissionPayable, $january1, $february1, releaseAt: $february15, idempotencyKey: 'period:2026-01');
+
+app(CommissionPeriodCalculator::class)->calculate($period);   // one run per commission component
+
+// Review the commissions: CALCULATED -> PENDING -> APPROVED (or CANCELLED).
+
+app(CommissionPeriodFinalizer::class)->finalize($period);     // APPROVED -> HELD
+app(CommissionPeriodReleaser::class)->release($period, $february15);   // HELD -> AVAILABLE
+
+app(CommissionPoster::class)->post($commission);              // AVAILABLE -> POSTED: the wallet is credited
+```
+
+- **Status**: `open → calculated → finalized → released`, each step once. One commission component is calculated by `CalculationEngine`, two or more as a [hybrid batch](#hybrid-composition); a failed calculation leaves the period open and calling again resumes it.
+- **Calculating closes the range.** From the moment a period's calculation begins, a new business entry — original or reversal — whose own moment falls in its range is refused with `FinalizedCommissionPeriod`, so no calculated result goes stale. A later reversal of one of its entries, dated after the period, is recorded as ever.
+- **Finalize and release never move money.** Finalizing needs every commission approved or cancelled, and no binary correction left unprocessed; releasing needs the release moment. `CommissionPoster` is still the ledger boundary: a period's commission posts only when AVAILABLE in a released period (`CommissionPeriodNotReleased` otherwise); commissions calculated outside periods still post straight from APPROVED.
+- **Corrections before posting**: a held or available commission is corrected like any unposted one — a partial binary share is recorded and posting pays what is left; a full correction cancels it.
+- `CommissionPeriodTotals::of($period)` gives calculated, adjustment, net and posted totals, exactly. Payouts and a paid status are not implemented.
+
 ## Commission core
 
 A commission is reviewed, then posted to the member's wallet through the ledger:
@@ -968,12 +996,12 @@ $commission = app(CommissionPoster::class)->post($commission);     // POSTED: th
 $commission = app(CommissionPoster::class)->reverse($commission, now());   // REVERSED: the credit is undone
 ```
 
-- `CALCULATED → PENDING → APPROVED → POSTED → REVERSED`, and `CANCELLED` from any status before `POSTED`. Nothing else: approval is explicit, and posting a commission that is not approved is refused. One commission at a time.
+- `CALCULATED → PENDING → APPROVED → POSTED → REVERSED`, and `CANCELLED` from any status before `POSTED`. Commissions of a [commission period](#commission-periods) pass `APPROVED → HELD → AVAILABLE` first. Nothing else: approval is explicit, and posting a commission that is not approved is refused. One commission at a time.
 - **Posting moves money only through the ledger**: one balanced transaction debiting the run's source account and crediting the member's wallet — opened if need be — occurring when it was earned. It moves the commission's **net amount**: its calculated amount less any binary correction recorded before posting — the whole amount when there is none — and records it as `posted_amount` (`$commission->postedAmount`). Posting again returns the commission and moves nothing.
 - A commission a binary reversal has partly undone is **not posted** until that correction is processed (`UnresolvedBinaryCorrection`), and one with nothing left to post is never posted for zero.
 - **Reversal** reverses that ledger transaction — exactly what was posted — at the moment you give; the original is untouched, and a commission is reversed once. A commission already partly corrected through the ledger is not reversed whole.
 - What was calculated — member, amount, currency, earned-at, trace — never changes, and runs and commissions are read-only through Eloquent.
-- Held, available and paid statuses, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
+- A paid status, payouts and batch approval are not implemented: posted means the ledger moved the money, not that it was paid out.
 
 ## Commission adjustments & source reversal clawback
 
@@ -1055,7 +1083,7 @@ Inside the package, read these values through `PandaBear\Mlm\Support\PandaMlmCon
 
 ## Roadmap
 
-Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, held, available and paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, persisted calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
+Planned, **not implemented**: percentage-of-money commissions, currency settlement precision, manual and positive commission adjustments, automatic clawback orchestration, qualified or ranked recipients for the built-in strategies, paid commissions, batch review, persisted qualification results, persisted ranks and rank history, rank promotion, demotion and maintenance, scheduled calculation periods, rules combined within a component other than a rank ladder, cross-component hybrid rules and caps, matching, generation, pool, leadership and fast-start bonuses, metric projections, running-balance projections, qualification rules, sponsor reassignment and correction, placement moves and removal, automatic placement strategies and matrix spillover, matrix cycling and re-entry, compressed matrices, matrix completion bonuses and boards, several matrix networks per program, matrix width changes, negative-balance and debt recovery after corrections, late binary events, binary carry expiry, pair caps and carry transfer between plan versions, multiple binary trees per program, business component drivers, performance and qualification, payouts and withdrawals, transfers, pending and available balances, fees, taxes and rounding policies, balance projections, and the Panda Panel screens for all of it.
 
 ## Testing
 

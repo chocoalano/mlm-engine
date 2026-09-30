@@ -15,7 +15,6 @@ use PandaBear\Mlm\Exceptions\CorruptCalculationBatch;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Exceptions\InvalidCommissionCandidate;
 use PandaBear\Mlm\Exceptions\InvalidHybridCalculation;
-use PandaBear\Mlm\Exceptions\InvalidPlanDefinition;
 use PandaBear\Mlm\Models\CalculationBatch;
 use PandaBear\Mlm\Models\CalculationBatchItem;
 use PandaBear\Mlm\Models\CalculationRun;
@@ -258,34 +257,10 @@ final readonly class HybridCalculationEngine
      */
     private function assertFunds(string $connection, Program $program, string $accountId, Collection $components): void
     {
-        $account = LedgerAccount::on($connection)->find($accountId)
-            ?? throw InvalidHybridCalculation::sourceAccount($accountId, 'it does not exist.');
+        $problem = CommissionFunding::problem($connection, (string) $program->getKey(), $accountId, $components);
 
-        if ($account->program_id !== $program->getKey()) {
-            throw InvalidHybridCalculation::sourceAccount($accountId, "it belongs to program [{$account->program_id}], not the plan's program [{$program->getKey()}].");
-        }
-
-        if ($account->wallet_id !== null) {
-            throw InvalidHybridCalculation::sourceAccount($accountId, "it is the account of wallet [{$account->wallet_id}], not a system account.");
-        }
-
-        foreach ($components as $component) {
-            try {
-                $parameters = CommissionComponentParameters::parse($component->parameters);
-            } catch (InvalidPlanDefinition $exception) {
-                throw InvalidHybridCalculation::sourceAccount($accountId, "component \"{$component->key}\" has no valid funding: {$exception->getMessage()}");
-            }
-
-            if ($parameters->sourceAccount !== $account->key || $parameters->currency->value() !== $account->currency) {
-                throw InvalidHybridCalculation::sourceAccount($accountId, sprintf(
-                    'component "%s" is funded from "%s" in %s, not "%s" in %s; every component of a hybrid batch is funded from one account.',
-                    $component->key,
-                    $parameters->sourceAccount,
-                    $parameters->currency->value(),
-                    $account->key,
-                    $account->currency,
-                ));
-            }
+        if ($problem !== null) {
+            throw InvalidHybridCalculation::sourceAccount($accountId, $problem);
         }
     }
 

@@ -47,6 +47,8 @@ use PandaBear\Mlm\Finance\FinancialAmount;
  * @property CommissionStatus $status
  * @property CarbonImmutable|null $pending_at
  * @property CarbonImmutable|null $approved_at
+ * @property CarbonImmutable|null $held_at
+ * @property CarbonImmutable|null $available_at
  * @property CarbonImmutable|null $posted_at
  * @property CarbonImmutable|null $cancelled_at
  * @property CarbonImmutable|null $reversed_at
@@ -82,6 +84,8 @@ final class Commission extends MlmModel
             'status' => CommissionStatus::class,
             'pending_at' => 'immutable_datetime',
             'approved_at' => 'immutable_datetime',
+            'held_at' => 'immutable_datetime',
+            'available_at' => 'immutable_datetime',
             'posted_at' => 'immutable_datetime',
             'cancelled_at' => 'immutable_datetime',
             'reversed_at' => 'immutable_datetime',

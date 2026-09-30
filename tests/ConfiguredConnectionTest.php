@@ -13,6 +13,7 @@ use PandaBear\Mlm\Commission\CommissionAdjustmentEngine;
 use PandaBear\Mlm\Commission\CommissionAdjustmentOutcome;
 use PandaBear\Mlm\Commission\CommissionStatus;
 use PandaBear\Mlm\Commission\HybridCalculationEngine;
+use PandaBear\Mlm\Exceptions\FinalizedCommissionPeriod;
 use PandaBear\Mlm\Exceptions\InvalidCalculationRun;
 use PandaBear\Mlm\Metrics\MetricContext;
 use PandaBear\Mlm\Metrics\MetricEngine;
@@ -28,6 +29,8 @@ use PandaBear\Mlm\Models\CalculationBatchItem;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\CommissionAdjustment;
+use PandaBear\Mlm\Models\CommissionPeriod;
+use PandaBear\Mlm\Models\CommissionPeriodRun;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
@@ -43,6 +46,11 @@ use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\SponsorEdge;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
+use PandaBear\Mlm\Period\CommissionPeriodCalculator;
+use PandaBear\Mlm\Period\CommissionPeriodFinalizer;
+use PandaBear\Mlm\Period\CommissionPeriodManager;
+use PandaBear\Mlm\Period\CommissionPeriodReleaser;
+use PandaBear\Mlm\Period\CommissionPeriodTotals;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Planning\Rules\MetricCondition;
 use PandaBear\Mlm\Planning\Rules\RuleDefinition;
@@ -71,9 +79,9 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
     use BuildsPlanDefinitions;
     use RecordsVolume;
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs'];
 
-    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class, CalculationBatch::class, CalculationBatchItem::class];
+    private const MODELS = [Program::class, Member::class, Plan::class, PlanVersion::class, SponsorEdge::class, PlacementEdge::class, VolumeEntry::class, PlanComponent::class, PlanRule::class, Wallet::class, LedgerAccount::class, LedgerTransaction::class, LedgerPosting::class, CalculationRun::class, Commission::class, CommissionAdjustment::class, BinaryPlacementPosition::class, BinaryPairingCursor::class, BinaryCarryLot::class, BinaryPairingResult::class, BinaryPairingAllocation::class, BinaryPairingCorrection::class, BinaryPairingRestoration::class, MatrixNetwork::class, MatrixPlacementPosition::class, CalculationBatch::class, CalculationBatchItem::class, CommissionPeriod::class, CommissionPeriodRun::class];
 
     protected function defineEnvironment($app): void
     {
@@ -455,6 +463,36 @@ final class ConfiguredConnectionTest extends DatabaseTestCase
         $this->assertSame([1, 2, 2, 3], [DB::connection('mlm')->table('mlm_calculation_batches')->count(), DB::connection('mlm')->table('mlm_calculation_batch_items')->count(), DB::connection('mlm')->table('mlm_calculation_runs')->count(), DB::connection('mlm')->table('mlm_commissions')->count()]);
         $this->assertSame(CommissionStatus::Posted, $posted->status);
         $this->assertFalse(Schema::connection('testing')->hasTable('mlm_calculation_batches'));
+    }
+
+    public function test_a_commission_period_runs_its_whole_life_on_the_configured_connection(): void
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'Alice', 'Bob');
+        $this->sponsorAt($members['Bob'], $members['Alice'], '2026-01-01 00:00:00');
+        $this->sale($members['Bob'], '150', '2026-01-10', 'order:ORD-1');
+        $source = $this->systemAccounts()->openSystemAccount($plan->program, 'IDR', 'commission.payable');
+        $draft = $this->draft($plan);
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'direct-sponsor.fixed', 'parameters' => $this->directParameters()]), 'direct');
+        $this->lifecycle()->markValidated($draft);
+        $this->lifecycle()->publish($draft->refresh());
+        $this->lifecycle()->activate($draft->refresh());
+
+        // Periods, their runs, the input guard, the lifecycle and posting all
+        // read and write [mlm].
+        $period = $this->app->make(CommissionPeriodManager::class)->create($plan->program, $draft->refresh(), $source, CarbonImmutable::parse('2026-01-01'), CarbonImmutable::parse('2026-02-01'), CarbonImmutable::parse('2026-02-15'), 'period:2026-01');
+        $commission = $this->approved($this->app->make(CommissionPeriodCalculator::class)->calculate($period)->commissions()[0]);
+        $this->app->make(CommissionPeriodFinalizer::class)->finalize($period);
+        $released = $this->app->make(CommissionPeriodReleaser::class)->release($period, CarbonImmutable::parse('2026-02-15'));
+        $posted = $this->poster()->post($commission);
+
+        $this->assertSame(['mlm', 'released', CommissionStatus::Posted], [$released->getConnectionName(), $released->status->value, $posted->status]);
+        $this->assertSame('10', CommissionPeriodTotals::of($released)->posted->value());
+        $this->assertSame([1, 1], [DB::connection('mlm')->table('mlm_commission_periods')->count(), DB::connection('mlm')->table('mlm_commission_period_runs')->count()]);
+        $this->assertFalse(Schema::connection('testing')->hasTable('mlm_commission_periods'));
+
+        $this->expectException(FinalizedCommissionPeriod::class);
+        $this->sale($members['Bob'], '1', '2026-01-20', 'order:late');
     }
 
     public function test_commissions_are_calculated_reviewed_posted_and_reversed_on_the_configured_connection(): void

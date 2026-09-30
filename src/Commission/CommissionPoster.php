@@ -7,6 +7,7 @@ namespace PandaBear\Mlm\Commission;
 use DateTimeInterface;
 use Illuminate\Database\Connection;
 use PandaBear\Mlm\Calculation\CalculationBatchStatus;
+use PandaBear\Mlm\Exceptions\CommissionPeriodNotReleased;
 use PandaBear\Mlm\Exceptions\IncompleteCalculationBatch;
 use PandaBear\Mlm\Exceptions\InvalidCommissionAdjustment;
 use PandaBear\Mlm\Exceptions\InvalidCommissionPosting;
@@ -20,11 +21,15 @@ use PandaBear\Mlm\Finance\ReverseLedgerTransaction;
 use PandaBear\Mlm\Models\Commission;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Program;
+use PandaBear\Mlm\Period\CommissionPeriodMembership;
+use PandaBear\Mlm\Period\CommissionPeriodStatus;
 
 /**
  * Moves a commission's money, through the ledger and nothing else.
  *
- * `post()` moves an APPROVED commission into its member's wallet: one
+ * `post()` moves an APPROVED commission into its member's wallet — or, for
+ * a commission of a commission period (ADR-029), an AVAILABLE one of a
+ * released period, and nothing earlier (`CommissionPeriodNotReleased`): one
  * balanced ledger transaction — the run's source account debited, the
  * wallet's account credited — occurring when the commission was earned.
  * It moves the commission's net amount (ADR-026): what was calculated, less
@@ -59,6 +64,7 @@ final readonly class CommissionPoster
 
     /**
      * @throws InvalidCommissionTransition unless the commission is APPROVED, or already POSTED
+     * @throws CommissionPeriodNotReleased for a period's commission not yet AVAILABLE in a released period
      * @throws IncompleteCalculationBatch while the hybrid batch its run belongs to is open
      * @throws UnresolvedBinaryCorrection while a binary correction of it has no financial adjustment
      * @throws InvalidCommissionPosting for a POSTED commission whose ledger transaction does not match it, or an APPROVED one with nothing left to post
@@ -77,8 +83,17 @@ final readonly class CommissionPoster
                 return $current;
             }
 
-            if ($current->status !== CommissionStatus::Approved) {
+            $period = CommissionPeriodMembership::periodOfRun($db, (string) $current->calculation_run_id);
+
+            if ($period === null && $current->status !== CommissionStatus::Approved) {
                 throw InvalidCommissionTransition::from($current, CommissionStatus::Posted);
+            }
+
+            // A period's commission moves no money before the period lets it:
+            // both the commission and its period are checked, so a status
+            // written raw cannot post early.
+            if ($period !== null && ($current->status !== CommissionStatus::Available || $period->status !== CommissionPeriodStatus::Released)) {
+                throw CommissionPeriodNotReleased::beforePosting($current, (string) $period->getKey(), $period->status->value);
             }
 
             $this->assertBatchCompleted($db, $current);
@@ -231,31 +246,10 @@ final readonly class CommissionPoster
      */
     private function assertNoUnresolvedCorrection(Connection $db, Commission $commission): void
     {
-        $reversals = $db->table('mlm_binary_pairing_corrections')
-            ->where('commission_id', $commission->getKey())
-            ->distinct()
-            ->pluck('reversal_volume_entry_id')
-            ->map(static fn (mixed $id): string => (string) $id)
-            ->all();
-
-        if ($reversals === []) {
-            return;
-        }
-
-        $resolved = $db->table('mlm_commission_adjustments')
-            ->where('commission_id', $commission->getKey())
-            ->where('type', CommissionAdjustmentEngine::CLAWBACK)
-            ->where('source_type', CommissionAdjustmentEngine::BINARY_VOLUME_REVERSAL)
-            ->pluck('source_id')
-            ->map(static fn (mixed $id): string => (string) $id)
-            ->all();
-
-        $unresolved = array_values(array_diff($reversals, $resolved));
+        $unresolved = UnresolvedBinaryCorrections::of($db, [(string) $commission->getKey()]);
 
         if ($unresolved !== []) {
-            sort($unresolved, SORT_STRING);
-
-            throw UnresolvedBinaryCorrection::beforePosting($commission, $unresolved);
+            throw UnresolvedBinaryCorrection::beforePosting($commission, $unresolved[(string) $commission->getKey()]);
         }
     }
 

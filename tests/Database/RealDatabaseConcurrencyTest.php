@@ -10,10 +10,13 @@ use PandaBear\Mlm\Binary\BinarySide;
 use PandaBear\Mlm\Commission\CommissionStatus;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationBatch;
 use PandaBear\Mlm\Exceptions\ConflictingCalculationReplay;
+use PandaBear\Mlm\Exceptions\ConflictingCommissionPeriod;
 use PandaBear\Mlm\Exceptions\ConflictingLedgerReplay;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
+use PandaBear\Mlm\Exceptions\FinalizedCommissionPeriod;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPairingRange;
 use PandaBear\Mlm\Exceptions\InvalidBinaryPlacement;
+use PandaBear\Mlm\Exceptions\InvalidCommissionPeriod;
 use PandaBear\Mlm\Exceptions\InvalidCommissionTransition;
 use PandaBear\Mlm\Exceptions\InvalidLedgerReversal;
 use PandaBear\Mlm\Exceptions\InvalidMatrixNetwork;
@@ -28,6 +31,7 @@ use PandaBear\Mlm\Finance\LedgerRecorder;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\CalculationRun;
 use PandaBear\Mlm\Models\Commission;
+use PandaBear\Mlm\Models\CommissionPeriod;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerPosting;
 use PandaBear\Mlm\Models\LedgerTransaction;
@@ -38,6 +42,8 @@ use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\Models\Wallet;
+use PandaBear\Mlm\Period\CommissionPeriodCalculator;
+use PandaBear\Mlm\Period\CommissionPeriodManager;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Concerns\BuildsCommissions;
 use PandaBear\Mlm\Tests\Concerns\BuildsFixedCommissions;
@@ -518,6 +524,134 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
 
         $this->assertOneSucceededOneRefused([$this->finish($first), $this->finish($second)], ConflictingCalculationBatch::class, 'differs in until');
         $this->assertSame([1, 2, 1], [DB::table('mlm_calculation_batches')->count(), DB::table('mlm_calculation_runs')->count(), DB::table('mlm_binary_pairing_results')->count()]);
+    }
+
+    /**
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function periodCreations(): array
+    {
+        return [
+            'the same key and facts' => ['jan', '2026-02-01 00:00:00', null],
+            'the same key, other facts' => ['jan', '2026-02-02 00:00:00', ConflictingCommissionPeriod::class],
+            'another key, an overlapping range' => ['jan:again', '2026-02-01 00:00:00', InvalidCommissionPeriod::class],
+        ];
+    }
+
+    /**
+     * Two creations of one program's periods (ADR-029) serialize on the
+     * program's row: the same request makes one period, a conflicting one
+     * or an overlapping one is refused.
+     */
+    #[DataProvider('periodCreations')]
+    public function test_racing_period_creations_of_one_program(string $secondKey, string $secondUntil, ?string $refusal): void
+    {
+        [$version, $account] = $this->periodPlan();
+        $job = ['op' => 'period_create', 'program' => $account->program_id, 'version' => $version->id, 'account' => $account->id, 'from' => '2026-01-01 00:00:00', 'release' => '2026-03-01 00:00:00'];
+
+        $this->holdRow('mlm_programs', $account->program_id);
+        $first = $this->start([...$job, 'key' => 'jan', 'until' => '2026-02-01 00:00:00']);
+        $second = $this->start([...$job, 'key' => $secondKey, 'until' => $secondUntil]);
+        $this->awaitWaitingOn(['mlm_programs', 'mlm_programs']);
+
+        $this->openGate();
+
+        $results = [$this->finish($first), $this->finish($second)];
+
+        if ($refusal === null) {
+            $this->assertSame([true, true, $results[0]['id']], [$results[0]['ok'], $results[1]['ok'], $results[1]['id']], json_encode($results, JSON_THROW_ON_ERROR));
+        } else {
+            $this->assertOneSucceededOneRefused($results, $refusal, $refusal === ConflictingCommissionPeriod::class ? 'differs in until' : 'never overlap');
+        }
+
+        $this->assertSame(1, DB::table('mlm_commission_periods')->count());
+    }
+
+    /**
+     * Two calculations of one open period — binary pairing and unilevel —
+     * serialize on its row to close its input, then calculate under the
+     * same derived keys: one run per component, binary state moved once,
+     * one calculated period.
+     */
+    public function test_racing_calculations_of_one_period_calculate_it_once(): void
+    {
+        $period = $this->openPeriod(binary: true);
+
+        $this->holdRow('mlm_commission_periods', $period->id);
+        $first = $this->start(['op' => 'period_calculate', 'period' => $period->id]);
+        $second = $this->start(['op' => 'period_calculate', 'period' => $period->id]);
+        $this->awaitWaitingOn(['mlm_commission_periods', 'mlm_commission_periods']);
+
+        $this->openGate();
+
+        [$a, $b] = [$this->finish($first), $this->finish($second)];
+        $this->assertSame([true, true], [$a['ok'], $b['ok']], json_encode([$a, $b], JSON_THROW_ON_ERROR));
+        $this->assertSame('calculated', DB::table('mlm_commission_periods')->value('status'));
+        $this->assertSame([2, 2, 1, 2], [DB::table('mlm_calculation_runs')->count(), DB::table('mlm_commission_period_runs')->count(), DB::table('mlm_binary_pairing_results')->count(), DB::table('mlm_commissions')->count()]);
+    }
+
+    /**
+     * A period's calculation racing a new entry in its range: the entry
+     * either commits before the input closes — and is calculated — or is
+     * refused. It is never recorded, uncounted, in a calculated range.
+     */
+    public function test_a_calculation_racing_a_new_entry_never_leaves_it_uncounted(): void
+    {
+        $period = $this->openPeriod();
+        $member = Member::query()->where('member_code', 'B')->sole();
+
+        $this->holdRow('mlm_commission_periods', $period->id);
+        $calculation = $this->start(['op' => 'period_calculate', 'period' => $period->id]);
+        $this->awaitWaitingOn(['mlm_commission_periods']);
+        $entry = $this->start([...$this->recordJob($member, '150'), 'effective_at' => '2026-01-20 12:00:00']);
+        $this->awaitWaitingOn(['mlm_commission_periods', 'mlm_commission_periods']);
+
+        $this->openGate();
+
+        [$calculated, $recorded] = [$this->finish($calculation), $this->finish($entry)];
+        $shown = json_encode([$calculated, $recorded], JSON_THROW_ON_ERROR);
+        $this->assertTrue($calculated['ok'], $shown);
+        $this->assertSame('calculated', DB::table('mlm_commission_periods')->value('status'));
+
+        if ($recorded['ok']) {
+            $this->assertSame(1, DB::table('mlm_commissions')->where('source_id', $recorded['id'])->count(), $shown);
+        } else {
+            $this->assertSame(FinalizedCommissionPeriod::class, $recorded['exception'], $shown);
+            $this->assertSame(0, DB::table('mlm_volume_entries')->where('idempotency_key', 'order:ORD-1')->count());
+        }
+
+        fwrite(STDERR, sprintf("\n[period race %s] entry %s\n", ExternalDatabase::selected()?->engine, $recorded['ok'] ? 'recorded and calculated' : 'refused'));
+    }
+
+    /**
+     * Two finalizations — and then two releases — of one period serialize on
+     * its row: each step is taken once, with one moment.
+     */
+    public function test_racing_finalizations_and_releases_of_one_period_take_each_step_once(): void
+    {
+        $period = $this->openPeriod();
+        $this->app->make(CommissionPeriodCalculator::class)->calculate($period);
+
+        foreach (Commission::query()->get() as $commission) {
+            $this->approved($commission);
+        }
+
+        foreach ([['op' => 'period_finalize', 'period' => $period->id], ['op' => 'period_release', 'period' => $period->id, 'at' => '2026-03-01 00:00:00']] as $job) {
+            $this->holdRow('mlm_commission_periods', $period->id);
+            $first = $this->start($job);
+            $second = $this->start($job);
+            $this->awaitWaitingOn(['mlm_commission_periods', 'mlm_commission_periods']);
+
+            $this->openGate();
+
+            [$a, $b] = [$this->finish($first), $this->finish($second)];
+            $this->assertSame([true, true], [$a['ok'], $b['ok']], json_encode([$a, $b], JSON_THROW_ON_ERROR));
+        }
+
+        $stored = DB::table('mlm_commission_periods')->sole();
+        $this->assertSame(['released', '2026-03-01 00:00:00'], [$stored->status, (string) $stored->released_at]);
+        $this->assertSame([['available', '2026-03-01 00:00:00']], DB::table('mlm_commissions')->get()->map(static fn (object $row): array => [$row->status, (string) $row->available_at])->unique()->values()->all());
+        $this->assertSame(1, DB::table('mlm_commissions')->distinct()->count('held_at'));
     }
 
     public function test_sponsor_and_placement_writes_in_one_program_run_one_at_a_time(): void
@@ -1417,6 +1551,51 @@ final class RealDatabaseConcurrencyTest extends DatabaseTestCase
         $this->lifecycle()->markValidated($draft);
 
         return [PlanVersion::query()->findOrFail($draft->id), $account];
+    }
+
+    /**
+     * An active plan version — a direct-sponsor component, and with
+     * `$binary` binary pairing too — and the account funding it: A
+     * sponsors B; P has L left and R right.
+     *
+     * @return array{PlanVersion, LedgerAccount}
+     */
+    private function periodPlan(bool $binary = false): array
+    {
+        $plan = Plan::factory()->create();
+        $members = $this->members($plan->program, 'A', 'B', 'P', 'L', 'R');
+        $this->travelTo(CarbonImmutable::parse('2026-01-01 00:00:00'));
+        $this->genealogy()->assignSponsor($members['B'], $members['A']);
+        $this->binary()->place($members['L'], $members['P'], BinarySide::Left);
+        $this->binary()->place($members['R'], $members['P'], BinarySide::Right);
+        $this->travelBack();
+        $account = $this->systemAccounts()->openSystemAccount($plan->program, 'IDR', 'commission.payable');
+        $draft = $this->draft($plan);
+        $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'direct-sponsor.fixed', 'parameters' => $this->directParameters()]), 'direct');
+
+        if ($binary) {
+            $this->addCommissionComponent($draft, $this->commissionParameters(['strategy' => 'binary.pairing.fixed', 'parameters' => ['volume_type' => 'sales', 'pair_quantity' => '100', 'amount_per_pair' => '10']]), 'binary');
+        }
+
+        $this->lifecycle()->markValidated($draft);
+        $this->lifecycle()->publish($draft->refresh());
+        $this->lifecycle()->activate($draft->refresh());
+
+        return [PlanVersion::query()->findOrFail($draft->id), $account];
+    }
+
+    /**
+     * An open January period of that plan, with B's and L's and R's sales.
+     */
+    private function openPeriod(bool $binary = false): CommissionPeriod
+    {
+        [$version, $account] = $this->periodPlan($binary);
+
+        foreach (['B' => 'b1', 'L' => 'l1', 'R' => 'r1'] as $code => $key) {
+            $this->sale(Member::query()->where('member_code', $code)->sole(), '100', '2026-01-10', $key);
+        }
+
+        return $this->app->make(CommissionPeriodManager::class)->create($account->program, $version, $account, CarbonImmutable::parse('2026-01-01'), CarbonImmutable::parse('2026-02-01'), CarbonImmutable::parse('2026-03-01'), 'period:jan');
     }
 
     /**

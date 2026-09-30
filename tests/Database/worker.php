@@ -41,6 +41,7 @@ use PandaBear\Mlm\Matrix\MatrixNetworkManager;
 use PandaBear\Mlm\Matrix\MatrixPlacementManager;
 use PandaBear\Mlm\Metrics\MetricEngine;
 use PandaBear\Mlm\Models\Commission;
+use PandaBear\Mlm\Models\CommissionPeriod;
 use PandaBear\Mlm\Models\LedgerAccount;
 use PandaBear\Mlm\Models\LedgerTransaction;
 use PandaBear\Mlm\Models\Member;
@@ -50,6 +51,10 @@ use PandaBear\Mlm\Models\PlanVersion;
 use PandaBear\Mlm\Models\Program;
 use PandaBear\Mlm\Models\VolumeEntry;
 use PandaBear\Mlm\PandaMlmServiceProvider;
+use PandaBear\Mlm\Period\CommissionPeriodCalculator;
+use PandaBear\Mlm\Period\CommissionPeriodFinalizer;
+use PandaBear\Mlm\Period\CommissionPeriodManager;
+use PandaBear\Mlm\Period\CommissionPeriodReleaser;
 use PandaBear\Mlm\Planning\PlanDefinitionEditor;
 use PandaBear\Mlm\Planning\PlanVersionLifecycle;
 use PandaBear\Mlm\Tests\Database\ExternalDatabase;
@@ -194,6 +199,18 @@ try {
             new CalculationContext(CarbonImmutable::parse($job['from']), CarbonImmutable::parse($job['until']), $job['key']),
             LedgerAccount::findOrFail($job['account']),
         )->batch->getKey(),
+        'period_create' => app(CommissionPeriodManager::class)->create(
+            Program::findOrFail($job['program']),
+            PlanVersion::findOrFail($job['version']),
+            LedgerAccount::findOrFail($job['account']),
+            CarbonImmutable::parse($job['from']),
+            CarbonImmutable::parse($job['until']),
+            CarbonImmutable::parse($job['release']),
+            $job['key'],
+        )->getKey(),
+        'period_calculate' => app(CommissionPeriodCalculator::class)->calculate(CommissionPeriod::findOrFail($job['period']))->period->getKey(),
+        'period_finalize' => app(CommissionPeriodFinalizer::class)->finalize(CommissionPeriod::findOrFail($job['period']))->getKey(),
+        'period_release' => app(CommissionPeriodReleaser::class)->release(CommissionPeriod::findOrFail($job['period']), CarbonImmutable::parse($job['at']))->getKey(),
         'clawback' => (string) app(CommissionAdjustmentEngine::class)->processVolumeReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'binary_clawback' => (string) app(CommissionAdjustmentEngine::class)->processBinaryReversal(VolumeEntry::findOrFail($job['reversal']))->count(),
         'commission_post' => app(CommissionPoster::class)->post(Commission::findOrFail($job['commission']))->getKey(),

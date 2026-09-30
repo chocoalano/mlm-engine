@@ -50,7 +50,9 @@ final class MigrationTest extends TestCase
 {
     private const TABLES_BEFORE_THE_LEDGER = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules'];
 
-    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items'];
+    private const TABLES = ['mlm_programs', 'mlm_members', 'mlm_plans', 'mlm_plan_versions', 'mlm_sponsor_edges', 'mlm_genealogy_paths', 'mlm_placement_edges', 'mlm_volume_entries', 'mlm_plan_components', 'mlm_plan_rules', 'mlm_wallets', 'mlm_ledger_accounts', 'mlm_ledger_transactions', 'mlm_ledger_postings', 'mlm_calculation_runs', 'mlm_commissions', 'mlm_commission_adjustments', 'mlm_binary_placement_positions', 'mlm_binary_pairing_cursors', 'mlm_binary_carry_lots', 'mlm_binary_pairing_results', 'mlm_binary_pairing_allocations', 'mlm_binary_pairing_corrections', 'mlm_binary_pairing_restorations', 'mlm_matrix_networks', 'mlm_matrix_placement_positions', 'mlm_calculation_batches', 'mlm_calculation_batch_items', 'mlm_commission_periods', 'mlm_commission_period_runs'];
+
+    private const PERIOD_TABLES = ['mlm_commission_periods', 'mlm_commission_period_runs'];
 
     private const MATRIX_TABLES = ['mlm_matrix_networks', 'mlm_matrix_placement_positions'];
 
@@ -307,6 +309,12 @@ final class MigrationTest extends TestCase
             'a batch item belongs to its batch' => ['mlm_calculation_batch_items', 'calculation_batch_id', 'mlm_calculation_batches'],
             'a batch item is one plan component' => ['mlm_calculation_batch_items', 'plan_component_id', 'mlm_plan_components'],
             'a batch item links its calculation run' => ['mlm_calculation_batch_items', 'calculation_run_id', 'mlm_calculation_runs'],
+            'a commission period belongs to a program' => ['mlm_commission_periods', 'program_id', 'mlm_programs'],
+            'a commission period keeps its plan version' => ['mlm_commission_periods', 'plan_version_id', 'mlm_plan_versions'],
+            'a commission period is funded from a ledger account' => ['mlm_commission_periods', 'source_ledger_account_id', 'mlm_ledger_accounts'],
+            'a period run belongs to its period' => ['mlm_commission_period_runs', 'commission_period_id', 'mlm_commission_periods'],
+            'a period run is one plan component' => ['mlm_commission_period_runs', 'plan_component_id', 'mlm_plan_components'],
+            'a period run links its calculation run' => ['mlm_commission_period_runs', 'calculation_run_id', 'mlm_calculation_runs'],
             'a pairing cursor belongs to a program' => ['mlm_binary_pairing_cursors', 'program_id', 'mlm_programs'],
             'a pairing cursor belongs to its component' => ['mlm_binary_pairing_cursors', 'plan_component_id', 'mlm_plan_components'],
             'a pairing cursor names its last run' => ['mlm_binary_pairing_cursors', 'last_calculation_run_id', 'mlm_calculation_runs'],
@@ -456,7 +464,7 @@ final class MigrationTest extends TestCase
             [
                 'id', 'calculation_run_id', 'program_id', 'member_id', 'candidate_key', 'currency', 'amount_millionths', 'earned_at', 'trace',
                 'status', 'pending_at', 'approved_at', 'posted_at', 'cancelled_at', 'reversed_at', 'source_type', 'source_id',
-                'ledger_transaction_id', 'reversal_ledger_transaction_id', 'posted_amount_millionths', 'created_at', 'updated_at',
+                'ledger_transaction_id', 'reversal_ledger_transaction_id', 'posted_amount_millionths', 'held_at', 'available_at', 'created_at', 'updated_at',
             ],
             Schema::getColumnListing('mlm_commissions'),
         );
@@ -484,6 +492,8 @@ final class MigrationTest extends TestCase
             array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-6])_/', $file) === 1)),
         );
         $this->assertCount(16, $migrations);
+        // With the period table volume recording reads, as this release does.
+        $migrations[] = $this->migration('000035');
         $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
         $this->assertFalse(Schema::hasTable('mlm_calculation_runs'));
 
@@ -561,7 +571,7 @@ final class MigrationTest extends TestCase
         // Nothing else of any commission, nor any other row, changed; none
         // was posted, so none records a posted amount.
         $this->assertSame($commissionsBefore, array_map(
-            static fn (array $row): array => array_diff_key($row, ['source_type' => 1, 'source_id' => 1, 'posted_amount_millionths' => 1]),
+            static fn (array $row): array => array_diff_key($row, ['source_type' => 1, 'source_id' => 1, 'posted_amount_millionths' => 1, 'held_at' => 1, 'available_at' => 1]),
             $this->rowsOf(['mlm_commissions'])['mlm_commissions'],
         ));
         $this->assertSame(0, DB::table('mlm_commissions')->whereNotNull('posted_amount_millionths')->count());
@@ -686,7 +696,7 @@ final class MigrationTest extends TestCase
         $this->assertFalse(Schema::hasColumn('mlm_commissions', 'source_id'));
         $this->assertSame($rows, $this->rowsOf(array_keys($rows)));
         $this->assertSame($schema, $this->schemaOf());
-        $this->assertSame(19, DB::table('migrations')->count());
+        $this->assertSame(20, DB::table('migrations')->count());
     }
 
     public function test_binary_positions_have_exactly_their_columns_and_one_child_per_side(): void
@@ -834,7 +844,7 @@ final class MigrationTest extends TestCase
 
         $this->assertFalse(Schema::hasColumn('mlm_commissions', 'posted_amount_millionths'));
         $schema = $this->schemaOf();
-        $tables = array_values(array_diff(self::TABLES, self::MATRIX_TABLES, self::BATCH_TABLES));
+        $tables = $this->existingTables();
         $rows = $this->rowsOf($tables);
 
         $this->artisan('migrate', ['--path' => $this->migration('000030'), '--realpath' => true])->assertSuccessful();
@@ -854,7 +864,7 @@ final class MigrationTest extends TestCase
 
         $this->assertSame($schema, $this->schemaOf());
         $this->assertSame($rows, $this->rowsOf($tables));
-        $this->assertSame(29, DB::table('migrations')->count());
+        $this->assertSame(30, DB::table('migrations')->count());
     }
 
     public function test_the_matrix_tables_have_exactly_their_columns_and_keys(): void
@@ -885,7 +895,7 @@ final class MigrationTest extends TestCase
         // The batch tables too, which the matrix migrations do not depend
         // on: posting reads them, and the code is always this release's.
         $this->travelTo(now()->setTime(12, 0));
-        $this->artisan('migrate', ['--path' => [...$this->migrations('000001', '000030'), ...$this->migrations('000033', '000034')], '--realpath' => true])->assertSuccessful();
+        $this->artisan('migrate', ['--path' => [...$this->migrations('000001', '000030'), ...$this->migrations('000033', '000037')], '--realpath' => true])->assertSuccessful();
         $this->assertFalse(Schema::hasTable('mlm_matrix_networks'));
         $this->pairingRun();
         $component = PlanComponent::query()->where('key', 'binary')->sole();
@@ -896,7 +906,7 @@ final class MigrationTest extends TestCase
         [$p, $l] = [Member::query()->whereKey(DB::table('mlm_placement_edges')->value('parent_id'))->sole(), Member::query()->whereKey(DB::table('mlm_placement_edges')->value('member_id'))->sole()];
         $this->app->make(SponsorGenealogy::class)->assignSponsor($l, $p);
         $this->assertSame(1, DB::table('mlm_binary_pairing_corrections')->count());
-        $tables = array_values(array_diff(self::TABLES, self::MATRIX_TABLES));
+        $tables = $this->existingTables();
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
@@ -924,7 +934,7 @@ final class MigrationTest extends TestCase
 
         $this->assertSame($schema, $this->schemaOf());
         $this->assertSame($rows, $this->rowsOf($tables));
-        $this->assertSame(32, DB::table('migrations')->count());
+        $this->assertSame(35, DB::table('migrations')->count());
     }
 
     public function test_the_batch_tables_have_exactly_their_columns_and_keys(): void
@@ -958,10 +968,10 @@ final class MigrationTest extends TestCase
     public function test_a_database_at_000032_gains_empty_calculation_batches_and_can_lose_them_again(): void
     {
         // Runs and commissions calculated before batches existed stay standalone.
-        $this->artisan('migrate', ['--path' => $this->migrations('000001', '000032'), '--realpath' => true])->assertSuccessful();
+        $this->artisan('migrate', ['--path' => [...$this->migrations('000001', '000032'), $this->migration('000035')], '--realpath' => true])->assertSuccessful();
         $this->pairingRun();
         $this->assertSame([1, 1], [DB::table('mlm_calculation_runs')->count(), DB::table('mlm_commissions')->count()]);
-        $tables = array_values(array_diff(self::TABLES, self::BATCH_TABLES));
+        $tables = $this->existingTables();
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
@@ -977,7 +987,66 @@ final class MigrationTest extends TestCase
 
         $this->assertSame($schema, $this->schemaOf());
         $this->assertSame($rows, $this->rowsOf($tables));
-        $this->assertSame(32, DB::table('migrations')->count());
+        $this->assertSame(33, DB::table('migrations')->count());
+    }
+
+    public function test_the_period_tables_have_exactly_their_columns_and_keys(): void
+    {
+        $this->artisan('migrate')->assertSuccessful();
+
+        $this->assertEqualsCanonicalizing(
+            ['id', 'program_id', 'plan_version_id', 'source_ledger_account_id', 'idempotency_key', 'from_at', 'until_at', 'release_at', 'status', 'input_closed_at', 'calculated_at', 'finalized_at', 'released_at', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_commission_periods'),
+        );
+        $this->assertEqualsCanonicalizing(
+            ['id', 'commission_period_id', 'plan_component_id', 'calculation_run_id', 'position', 'created_at', 'updated_at'],
+            Schema::getColumnListing('mlm_commission_period_runs'),
+        );
+        $this->assertSame([['program_id', 'idempotency_key']], $this->uniqueIndexColumns('mlm_commission_periods'));
+        $this->assertContains(['program_id', 'from_at', 'until_at'], collect(Schema::getIndexes('mlm_commission_periods'))->pluck('columns')->all());
+        $this->assertEqualsCanonicalizing(
+            [['calculation_run_id'], ['commission_period_id', 'plan_component_id'], ['commission_period_id', 'position']],
+            $this->uniqueIndexColumns('mlm_commission_period_runs'),
+        );
+
+        foreach (['held_at', 'available_at'] as $column) {
+            $this->assertTrue(collect(Schema::getColumns('mlm_commissions'))->firstWhere('name', $column)['nullable'] ?? false, $column);
+        }
+    }
+
+    public function test_a_database_at_000034_gains_empty_periods_and_can_lose_them_again(): void
+    {
+        // Runs, commissions — one posted — binary state and volume written
+        // as 000034 left them; then the period migrations are undone, and
+        // done again.
+        $this->artisan('migrate')->assertSuccessful();
+        $this->pairingRun();
+        $commission = Commission::query()->sole();
+        $this->app->make(CommissionPoster::class)->post($this->app->make(CommissionLifecycle::class)->approve($this->app->make(CommissionLifecycle::class)->markPending($commission)));
+        $periods = $this->migrations('000035', '000037');
+        $this->artisan('migrate:rollback', ['--path' => $periods, '--realpath' => true])->assertSuccessful();
+
+        $this->assertFalse(Schema::hasTable('mlm_commission_periods'));
+        $this->assertFalse(Schema::hasColumn('mlm_commissions', 'held_at'));
+        $tables = $this->existingTables();
+        $schema = $this->schemaOf();
+        $rows = $this->rowsOf($tables);
+
+        $this->artisan('migrate', ['--path' => $periods, '--realpath' => true])->assertSuccessful();
+
+        // No period is inferred, and every commission keeps its status.
+        foreach (self::PERIOD_TABLES as $table) {
+            $this->assertSame(0, DB::table($table)->count(), $table);
+        }
+
+        $this->assertSame(['posted'], DB::table('mlm_commissions')->pluck('status')->all());
+        $this->assertSame($rows['mlm_commissions'], array_map(static fn (array $row): array => array_diff_key($row, ['held_at' => 1, 'available_at' => 1]), $this->rowsOf(['mlm_commissions'])['mlm_commissions']));
+        $this->assertSame(array_diff_key($rows, ['mlm_commissions' => 1]), array_diff_key($this->rowsOf($tables), ['mlm_commissions' => 1]));
+
+        $this->artisan('migrate:rollback', ['--path' => $periods, '--realpath' => true])->assertSuccessful();
+
+        $this->assertSame($schema, $this->schemaOf());
+        $this->assertSame($rows, $this->rowsOf($tables));
     }
 
     public function test_a_database_at_000022_gains_empty_binary_pairing_state_and_can_lose_it_again(): void
@@ -990,7 +1059,7 @@ final class MigrationTest extends TestCase
         $alice = Member::query()->whereKeyNot($bob->id)->sole();
         $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
         $this->app->make(BinaryPlacementManager::class)->place($bob, $alice, BinarySide::Left);
-        $tables = array_values(array_diff(self::TABLES, self::PAIRING_TABLES, self::MATRIX_TABLES, self::BATCH_TABLES));
+        $tables = $this->existingTables();
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
@@ -1007,7 +1076,7 @@ final class MigrationTest extends TestCase
 
         $this->assertSame($rows, $this->rowsOf($tables));
         $this->assertSame($schema, $this->schemaOf());
-        $this->assertSame(22, DB::table('migrations')->count());
+        $this->assertSame(23, DB::table('migrations')->count());
     }
 
     public function test_a_database_at_000021_gains_an_empty_binary_overlay_and_can_lose_it_again(): void
@@ -1025,7 +1094,7 @@ final class MigrationTest extends TestCase
         $reversal = $this->app->make(VolumeRecorder::class)->reverse(new ReverseVolume($entry, 'refund', 'RF-1', 'refund:RF-1', now()->addDay()));
         $this->assertSame(4, $this->app->make(CommissionAdjustmentEngine::class)->processVolumeReversal($reversal)->count());
         $this->assertFalse(Schema::hasTable('mlm_binary_placement_positions'));
-        $tables = array_values(array_diff(self::TABLES, ['mlm_binary_placement_positions', ...self::PAIRING_TABLES, ...self::MATRIX_TABLES, ...self::BATCH_TABLES]));
+        $tables = $this->existingTables();
         $schema = $this->schemaOf();
         $rows = $this->rowsOf($tables);
 
@@ -1053,6 +1122,8 @@ final class MigrationTest extends TestCase
             array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-8])_/', $file) === 1)),
         );
         $this->assertCount(18, $migrations);
+        // With the period table volume recording reads, as this release does.
+        $migrations[] = $this->migration('000035');
         $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
 
         $program = Program::factory()->create();
@@ -1106,7 +1177,12 @@ final class MigrationTest extends TestCase
         [$alice, $bob] = Member::factory()->for($program)->count(2)->create()->all();
         $this->app->make(SponsorGenealogy::class)->assignSponsor($bob, $alice);
         $this->app->make(PlacementGenealogy::class)->place($bob, $alice);
-        $this->app->make(VolumeRecorder::class)->record(new RecordVolume($bob, 'sales', Quantity::of('150'), 'order', 'ORD-1', 'order:ORD-1', now()));
+        // Written as the release of the day wrote it: this release's recorder
+        // also reads commission periods, which need the ledger.
+        DB::table('mlm_volume_entries')->insert([
+            'id' => strtolower((string) Str::ulid()), 'program_id' => $program->id, 'member_id' => $bob->id, 'type' => 'sales', 'quantity_millionths' => 150_000_000,
+            'source_type' => 'order', 'source_id' => 'ORD-1', 'idempotency_key' => 'order:ORD-1', 'effective_at' => now(), 'reversal_of_id' => null, 'created_at' => now(), 'updated_at' => now(),
+        ]);
         $version = $this->app->make(PlanVersionLifecycle::class)->draft($program->plans()->create(['code' => 'MAIN', 'name' => 'Main']));
         $ladder = $this->app->make(PlanDefinitionEditor::class)->addComponent($version, 'career-ranks', 'rank.ladder', 'Career Ranks');
         $this->app->make(PlanDefinitionEditor::class)->addRule($ladder, 'bronze', 'Bronze', RuleDefinition::all(MetricCondition::of('sponsor.network.volume', ['type' => 'sales'], '>=', '100')), 10);
@@ -1194,6 +1270,8 @@ final class MigrationTest extends TestCase
             array_values(array_filter(scandir(dirname(__DIR__).'/database/migrations') ?: [], static fn (string $file): bool => preg_match('/_0000(0[1-9]|1[0-9])_/', $file) === 1)),
         );
         $this->assertCount(19, $migrations);
+        // With the period table volume recording reads, as this release does.
+        $migrations[] = $this->migration('000035');
         $this->artisan('migrate', ['--path' => $migrations, '--realpath' => true])->assertSuccessful();
         $this->assertFalse(Schema::hasColumn('mlm_commissions', 'source_type'));
 
@@ -1272,6 +1350,16 @@ final class MigrationTest extends TestCase
         $this->assertCount((int) $to - (int) $from + 1, $files);
 
         return $files;
+    }
+
+    /**
+     * The package's tables the database holds now.
+     *
+     * @return list<string>
+     */
+    private function existingTables(): array
+    {
+        return array_values(array_filter(self::TABLES, static fn (string $table): bool => Schema::hasTable($table)));
     }
 
     /**

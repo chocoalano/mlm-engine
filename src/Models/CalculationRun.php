@@ -39,6 +39,7 @@ use PandaBear\Mlm\Exceptions\ImmutableCalculationRecord;
  * @property-read Collection<int, Commission> $commissions
  * @property-read Collection<int, BinaryPairingResult> $binaryPairingResults
  * @property-read CalculationBatchItem|null $batchItem
+ * @property-read CommissionPeriodRun|null $periodRun
  */
 final class CalculationRun extends MlmModel
 {
@@ -122,6 +123,16 @@ final class CalculationRun extends MlmModel
     public function batchItem(): HasOne
     {
         return $this->hasOne(CalculationBatchItem::class);
+    }
+
+    /**
+     * The commission period it was calculated for (ADR-029), if any.
+     *
+     * @return HasOne<CommissionPeriodRun, $this>
+     */
+    public function periodRun(): HasOne
+    {
+        return $this->hasOne(CommissionPeriodRun::class);
     }
 
     protected static function booted(): void

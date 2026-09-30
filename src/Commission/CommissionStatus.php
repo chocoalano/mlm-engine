@@ -10,14 +10,19 @@ namespace PandaBear\Mlm\Commission;
  * which a REVERSAL can undo. Until it is posted it can be CANCELLED, which
  * moves no money.
  *
- * Deliberately a prefix of a longer life: held, available and paid need
- * hold, availability and payout rules that do not exist yet.
+ * A commission of a commission period (ADR-029) goes APPROVED → HELD when
+ * the period is finalized, HELD → AVAILABLE when it is released, and only
+ * then is POSTED; the period services alone make those moves. APPROVED →
+ * POSTED remains for commissions calculated outside any period. Paid is
+ * payout's, and does not exist yet.
  */
 enum CommissionStatus: string
 {
     case Calculated = 'calculated';
     case Pending = 'pending';
     case Approved = 'approved';
+    case Held = 'held';
+    case Available = 'available';
     case Posted = 'posted';
     case Cancelled = 'cancelled';
     case Reversed = 'reversed';
@@ -30,7 +35,9 @@ enum CommissionStatus: string
         return match ($this) {
             self::Calculated => [self::Pending, self::Cancelled],
             self::Pending => [self::Approved, self::Cancelled],
-            self::Approved => [self::Posted, self::Cancelled],
+            self::Approved => [self::Held, self::Posted, self::Cancelled],
+            self::Held => [self::Available, self::Cancelled],
+            self::Available => [self::Posted, self::Cancelled],
             self::Posted => [self::Reversed],
             self::Cancelled, self::Reversed => [],
         };
@@ -50,6 +57,8 @@ enum CommissionStatus: string
             self::Calculated => null,
             self::Pending => 'pending_at',
             self::Approved => 'approved_at',
+            self::Held => 'held_at',
+            self::Available => 'available_at',
             self::Posted => 'posted_at',
             self::Cancelled => 'cancelled_at',
             self::Reversed => 'reversed_at',

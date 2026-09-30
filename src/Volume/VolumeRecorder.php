@@ -11,6 +11,7 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use PandaBear\Mlm\Exceptions\ConflictingVolumeReplay;
 use PandaBear\Mlm\Exceptions\InvalidVolumeReversal;
 use PandaBear\Mlm\Models\VolumeEntry;
+use PandaBear\Mlm\Period\FinalizedCommissionPeriodGuard;
 
 /**
  * The only supported way to write volume history.
@@ -21,10 +22,16 @@ use PandaBear\Mlm\Models\VolumeEntry;
  * unique keys on (program_id, idempotency_key) and on reversal_of_id are the
  * concurrency backstop — a write that loses a race to the same key, or to a
  * reversal of the same entry, is resolved from the row that won.
+ *
+ * A new entry — original or reversal — whose own moment falls in a
+ * commission period whose input is closed is refused
+ * (`FinalizedCommissionPeriod`, ADR-029); a replay of a stored one is not.
  */
 final class VolumeRecorder
 {
     private const TABLE = 'mlm_volume_entries';
+
+    public function __construct(private readonly FinalizedCommissionPeriodGuard $periods) {}
 
     public function record(RecordVolume $command): VolumeEntry
     {
@@ -120,13 +127,18 @@ final class VolumeRecorder
 
         // Its own transaction — a savepoint inside the caller's, if there is
         // one — so a duplicate key rolls back this insert alone, and a
-        // surrounding PostgreSQL transaction survives for the re-read.
-        $connection->transaction(static fn (): bool => $connection->table(self::TABLE)->insert([
-            'id' => $id,
-            ...$row,
-            'created_at' => $now,
-            'updated_at' => $now,
-        ]));
+        // surrounding PostgreSQL transaction survives for the re-read. The
+        // period its moment falls in stays share-locked until it commits.
+        $connection->transaction(function () use ($connection, $id, $row, $now): bool {
+            $this->periods->assertAccepts($connection, (string) $row['program_id'], $row['effective_at']);
+
+            return $connection->table(self::TABLE)->insert([
+                'id' => $id,
+                ...$row,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        });
 
         return VolumeEntry::on($connection->getName())->findOrFail($id);
     }

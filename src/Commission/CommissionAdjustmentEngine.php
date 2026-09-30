@@ -30,8 +30,8 @@ use PandaBear\Mlm\Volume\Quantity;
  * rounding is run again, and the commission's calculated facts never
  * change. What happens depends on where the commission is:
  *
- * - CALCULATED, PENDING or APPROVED: no money has moved, so it is cancelled
- *   through `CommissionLifecycle` — outcome `cancelled`;
+ * - CALCULATED, PENDING, APPROVED, HELD or AVAILABLE: no money has moved,
+ *   so it is cancelled through `CommissionLifecycle` — outcome `cancelled`;
  * - POSTED: its ledger transaction is reversed through `CommissionPoster`,
  *   at the reversal's moment — outcome `reversed`;
  * - CANCELLED or REVERSED already: nothing changes — `already_cancelled`,
@@ -56,9 +56,10 @@ use PandaBear\Mlm\Volume\Quantity;
  * reversal, of source `binary-volume-reversal`, recorded with its share
  * negated — zero when the share is under a financial millionth:
  *
- * - CALCULATED, PENDING or APPROVED: no money has moved. If the corrections
- *   leave nothing, it is cancelled — `cancelled`; otherwise it keeps its
- *   status and posting will move only what is left — `recorded`;
+ * - CALCULATED, PENDING, APPROVED, HELD or AVAILABLE: no money has moved
+ *   — a period's held or available commission included (ADR-029). If the
+ *   corrections leave nothing, it is cancelled — `cancelled`; otherwise it
+ *   keeps its status and posting will move only what is left — `recorded`;
  * - POSTED: a zero share moves nothing — `recorded`. A share that leaves
  *   nothing, with no part of it moved back before, reverses the posting
  *   through `CommissionPoster` — `reversed`. Any other share moves back
@@ -240,7 +241,7 @@ final readonly class CommissionAdjustmentEngine
         $before = $commission->status;
 
         [$outcome, $ledgerTransaction] = match ($before) {
-            CommissionStatus::Calculated, CommissionStatus::Pending, CommissionStatus::Approved => $this->cancel($commission),
+            CommissionStatus::Calculated, CommissionStatus::Pending, CommissionStatus::Approved, CommissionStatus::Held, CommissionStatus::Available => $this->cancel($commission),
             CommissionStatus::Posted => [CommissionAdjustmentOutcome::Reversed, $this->poster->reverse($commission, $reversal->effective_at)->reversal_ledger_transaction_id],
             CommissionStatus::Cancelled => [CommissionAdjustmentOutcome::AlreadyCancelled, null],
             CommissionStatus::Reversed => [CommissionAdjustmentOutcome::AlreadyReversed, (string) $this->poster->verifiedReversal($commission)->getKey()],
@@ -310,7 +311,7 @@ final readonly class CommissionAdjustmentEngine
         }
 
         [$outcome, $ledgerTransaction] = match ($before) {
-            CommissionStatus::Calculated, CommissionStatus::Pending, CommissionStatus::Approved => $left->isZero()
+            CommissionStatus::Calculated, CommissionStatus::Pending, CommissionStatus::Approved, CommissionStatus::Held, CommissionStatus::Available => $left->isZero()
                 ? $this->cancel($commission)
                 : [CommissionAdjustmentOutcome::Recorded, null],
             CommissionStatus::Posted => $this->correctPosted($commission, $share->amount, $net, $left, $earlier, $reversal),
